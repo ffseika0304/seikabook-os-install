@@ -192,22 +192,22 @@ bench_mirror() {
 # 7. pacstrap 基础系统 + 桌面
 # ════════════════════════════════════════════════════════════
 install_base() {
+    # 注意: $( [ ... ] && echo ... || true ) 必须带 || true——
+    # 否则条件为假时命令替换退出码=1, 赋值语句在 set -e 下直接退出(经典陷阱)
     PACKAGES="base base-devel linux linux-firmware linux-lts \
 btrfs-progs grub efibootmgr os-prober ntfs-3g \
 networkmanager sudo vim git \
 $( [ "${DESKTOP}" = "kde" ] && echo "plasma-meta sddm konsole dolphin ark gwenview \
 fcitx5-im fcitx5-chinese-addons fcitx5-configtool \
-noto-fonts noto-fonts-cjk noto-fonts-emoji wqy-microhei" ) \
+noto-fonts noto-fonts-cjk noto-fonts-emoji wqy-microhei" || true ) \
 $( [ "${DESKTOP}" = "gnome" ] && echo "gnome gnome-extra gdm fcitx5-im fcitx5-chinese-addons \
-noto-fonts noto-fonts-cjk" ) \
+noto-fonts noto-fonts-cjk" || true ) \
 $( [ "${DESKTOP}" = "hyprland" ] && echo "hyprland waybar rofi-wayland kitty \
-fcitx5-im fcitx5-chinese-addons noto-fonts noto-fonts-cjk" ) \
-$( [ "${DESKTOP}" = "headless" ] && echo "openssh cronie" )"
+fcitx5-im fcitx5-chinese-addons noto-fonts noto-fonts-cjk" || true ) \
+$( [ "${DESKTOP}" = "headless" ] && echo "openssh cronie" || true )"
 
     say "安装基础系统 + 桌面（约 10-15 分钟，取决于网速）..."
-    echo "DEBUG3: pacstrap starting" >&2
     pacstrap -K /mnt ${PACKAGES} 2>&1 | tail -3
-    echo "DEBUG4: pacstrap rc=$?" >&2
     genfstab -U /mnt >> /mnt/etc/fstab
     ok "基础系统安装完成"
 }
@@ -313,11 +313,8 @@ main() {
     [[ "${ans,,}" == "y" ]] || { say "已取消"; exit 0; }
 
     [ "${AUTO_MIRROR}" = "1" ] && bench_mirror
-    echo "DEBUG0: bench done, calling setup_disk" >&2
     setup_disk
-    echo "DEBUG1: setup_disk rc=$?, calling install_base" >&2
     install_base
-    echo "DEBUG2: install_base done" >&2
     configure_system
 
     echo
