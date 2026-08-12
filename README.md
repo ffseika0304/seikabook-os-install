@@ -30,7 +30,7 @@ curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/install.sh
 ## 它有什么
 
 - **硬件感知**：自动识别 CPU / GPU，选型对应内核策略与驱动
-- **按需编译内核**：在你自己机器上现场编译（zen4 微架构 / BORE 调度器 / amd_pstate EPP 自动配置）——不预分发任何内核包，产物只属于你的硬件
+- **通用增强内核（可选）**：`seika-kernel.sh` 一键编译 linux-zen 底包 + BORE 调度器——不预分发任何内核包，在你的机器上现场编译，AMD / Intel 通用
 - **双内核并行（zen + lts）**：一个跑性能，一个跑稳定，GRUB 菜单自由切换
 - **BTRFS + Timeshift 快照**：@ / @home / @snapshots 结构预置，滚挂了秒回退
 - **国内镜像源自动测速**：清华 / 阿里 / 中科大，选最快
@@ -38,6 +38,20 @@ curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/install.sh
 - **桌面环境可选**：KDE / GNOME / Hyprland / 无头模式
 - **中文环境开箱即用**：locale / fcitx5 / 中文字体 一键配好
 - **NVIDIA 闭源驱动支持**：nvidia-dkms + 对应内核 headers 自动匹配
+
+---
+
+## 两段式：先能用，再优化
+
+Seikabook OS 把"装机"拆成两步，第一步让你快速见到桌面，第二步才是锦上添花：
+
+**第一段：装系统（install.sh）** —— 从 Arch ISO 启动，30 分钟到 KDE 桌面
+
+**第二段：增强内核（seika-kernel.sh）** —— 进系统后想优化时再跑，现场编译
+`linux-zen + BORE` 调度器（桌面响应性提升，AMD / Intel 通用），
+编译过程带完整日志，产物是独立包，与官方内核共存、GRUB 随时回退。
+
+> 内核编译是"学习"的一部分——先让桌面跑起来，再开始折腾。
 
 ---
 
