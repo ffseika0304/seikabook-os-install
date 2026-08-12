@@ -205,7 +205,9 @@ fcitx5-im fcitx5-chinese-addons noto-fonts noto-fonts-cjk" ) \
 $( [ "${DESKTOP}" = "headless" ] && echo "openssh cronie" )"
 
     say "安装基础系统 + 桌面（约 10-15 分钟，取决于网速）..."
+    echo "DEBUG3: pacstrap starting" >&2
     pacstrap -K /mnt ${PACKAGES} 2>&1 | tail -3
+    echo "DEBUG4: pacstrap rc=$?" >&2
     genfstab -U /mnt >> /mnt/etc/fstab
     ok "基础系统安装完成"
 }
@@ -311,8 +313,11 @@ main() {
     [[ "${ans,,}" == "y" ]] || { say "已取消"; exit 0; }
 
     [ "${AUTO_MIRROR}" = "1" ] && bench_mirror
+    echo "DEBUG0: bench done, calling setup_disk" >&2
     setup_disk
+    echo "DEBUG1: setup_disk rc=$?, calling install_base" >&2
     install_base
+    echo "DEBUG2: install_base done" >&2
     configure_system
 
     echo
