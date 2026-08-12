@@ -74,8 +74,9 @@ curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/install.sh
 不需要手动分区，不需要先配置网络，不需要查 CPU 型号。
 脚本会引导你完成每一步（分区 / 网络 / 桌面选择），并根据你的硬件自动做选择。
 
-> **当前状态**：`install.sh` 主流程 v0.1 完成（分区 → pacstrap → KDE → 中文环境 → 双系统 GRUB），
-> 建议先在虚拟机里试跑验证；`seika-kernel.sh` 增强内核脚本可用。
+> **当前状态**：`install.sh` 主流程 **v1.0（已在虚拟机全流程实测通过）**——
+> 从 archiso 引导到装出可独立启动的 KDE 系统，全程验证 OK（含双内核 / fcitx5 / GRUB 引导 / 用户登录）。
+> `seika-kernel.sh` 增强内核脚本可用。
 > 欢迎提 issue 反馈你遇到的硬件和问题——你踩过的坑会沉淀进下一版。
 
 ---
