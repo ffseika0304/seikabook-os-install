@@ -63,18 +63,17 @@ preflight() {
     locale-gen >/dev/null 2>&1 || true
     export LANG=zh_CN.UTF-8 LC_ALL=zh_CN.UTF-8
 
-    # 3) 中文终端 + 字体（物理 tty 显示中文必需 fbterm 终端）
-    pacman -Sy --noconfirm --needed fbterm wqy-zenhei noto-fonts-cjk >/dev/null 2>&1 || true
+    # 3) 中文字体 + 控制台中文字体（unifont 供 setfont 在原生 tty 显示中文）
+    pacman -Sy --noconfirm --needed wqy-zenhei noto-fonts-cjk unifont >/dev/null 2>&1 || true
 
-    # 4) 仅在物理 tty（非 SSH）切 fbterm，使本地控制台可见中文；SSH 下跳过
+    # 4) 物理 tty（非 SSH）用 setfont 加载 unifont，使原生控制台可显示中文；SSH 下跳过
+    #    setfont 直接改内核控制台字体，不依赖 framebuffer 终端/fontconfig，比 fbterm 更通用
     if [ -z "${SSH_TTY:-}" ] && [ -t 1 ]; then
-        if command -v fbterm >/dev/null 2>&1; then
-            FONT=$(fc-list 2>/dev/null | grep -iE 'wqy|wenquanyi' | head -1 | cut -d: -f2 | xargs)
-            [ -n "${FONT}" ] && printf 'font=%s\n' "$FONT" > ~/.fbtermrc
-            exec fbterm -- bash "$0" "$@"
+        command -v kbd_mode >/dev/null 2>&1 && kbd_mode -u 2>/dev/null || true
+        if command -v setfont >/dev/null 2>&1 && setfont unifont 2>/dev/null; then
+            ok "已加载 unifont，本地控制台可显示中文"
         else
-            warn "未能安装 fbterm，本地控制台可能无法显示中文。"
-            warn "建议改用 SSH 连接 archiso 后再运行本脚本（SSH 客户端可正常显示中文）。"
+            warn "加载 unifont 失败，本地控制台中文可能乱码，建议改用 SSH 连接操作（SSH 客户端中文正常）"
         fi
     fi
 }
