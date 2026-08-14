@@ -148,11 +148,11 @@ suggest_plan() {
     esac
     case "${GPU_FAMILY}" in
         amd)    echo "  - GPU: AMD - amdgpu + Mesa open driver, zero config" ;;
-        nvidia) echo "  - GPU: NVIDIA - use nvidia-dkms after install (this script installs open nouveau first so you can boot)" ;;
+        nvidia) echo "  - GPU: NVIDIA - nvidia-open-dkms (open kernel modules, DKMS; builds for your zen kernel, NOT the laggy nouveau). Covers Turing+ (RTX20/30/40/50). Older (GTX10xx/9xx) need a legacy AUR driver." ;;
         intel)  echo "  - GPU: Intel - i915/xe open driver, zero config" ;;
         *)      echo "  - GPU: unknown - check with lspci after install" ;;
     esac
-    echo "  - Kernel: official linux + linux-lts dual kernel preinstalled (switch in GRUB), enhanced kernel optional later"
+    echo "  - Kernel: linux-zen + linux-lts dual kernel preinstalled (default boots zen; recover via 'Advanced options' -> linux-lts), enhanced kernel optional later"
     echo "  - Desktop: KDE Plasma (the most beginner-friendly modern desktop)"
 }
 
@@ -415,7 +415,7 @@ install_base() {
     # Note: $( [ ... ] && echo ... || true ) must keep || true --
     # otherwise when the condition is false the substitution exits 1,
     # and under set -e the assignment would abort (classic trap)
-    PACKAGES="base base-devel linux linux-firmware linux-lts \
+    PACKAGES="base base-devel linux-zen linux-zen-headers linux-lts linux-lts-headers linux-firmware \
 btrfs-progs grub efibootmgr os-prober ntfs-3g timeshift grub-btrfs \
 networkmanager cronie sudo vim git \
 $( [ "${DESKTOP}" = "kde" ] && echo "plasma-meta plasma-login-manager konsole dolphin ark gwenview \
@@ -425,7 +425,8 @@ $( [ "${DESKTOP}" = "gnome" ] && echo "gnome gnome-extra gdm fcitx5-im fcitx5-ch
 noto-fonts noto-fonts-cjk" || true ) \
 $( [ "${DESKTOP}" = "hyprland" ] && echo "hyprland sddm waybar rofi-wayland kitty \
 fcitx5-im fcitx5-chinese-addons noto-fonts noto-fonts-cjk" || true ) \
-$( [ "${DESKTOP}" = "headless" ] && echo "openssh cronie" || true )"
+$( [ "${DESKTOP}" = "headless" ] && echo "openssh cronie" || true ) \
+$( [ "${GPU_FAMILY}" = "nvidia" ] && echo "nvidia-open-dkms$( [ \"${DESKTOP}\" != \"headless\" ] && echo \" lib32-nvidia-open-utils\" )" || true )"
 
     say "Installing base system + desktop (~10-15 min, depends on network)..."
     pacstrap -K /mnt ${PACKAGES} 2>&1 | tail -3
@@ -542,13 +543,31 @@ printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/
     fi
     # btrfs root subvolume: tells 10_linux + grub-btrfs the system lives in @
     echo 'GRUB_BTRFS_ROOT_SUBVOLUME="@"' >> /mnt/etc/default/grub
-    # default to the FIRST menu entry = latest standard kernel (linux), never linux-lts.
-    # 10_linux always puts `Arch Linux` (the linux package) first; linux-lts lives in
-    # the "Advanced options" submenu. Pin it so a rebuild can never silently boot lts.
+    # NVIDIA: enable DRM modeset + fbdev so Wayland (and the console) work on the
+    # proprietary/open modules. Without modeset=1 a Wayland session will not start.
+    if [ "${GPU_FAMILY}" = "nvidia" ]; then
+        grep -q '^GRUB_CMDLINE_LINUX_DEFAULT=' /mnt/etc/default/grub \
+            || echo 'GRUB_CMDLINE_LINUX_DEFAULT=""' >> /mnt/etc/default/grub
+        sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 nvidia_drm.modeset=1 nvidia_drm.fbdev=1"/' /mnt/etc/default/grub
+    fi
+    # default to the FIRST menu entry = linux-zen (highest version, so it sorts first),
+    # never linux-lts. 10_linux always puts `Arch Linux` (linux-zen) first; linux-lts
+    # lives in the "Advanced options" submenu. Pin it so a rebuild can never silently boot lts.
     echo 'GRUB_DEFAULT=0' >> /mnt/etc/default/grub
     echo 'GRUB_SAVEDEFAULT=false' >> /mnt/etc/default/grub
     if [ "${GRUB_OK}" = "1" ]; then
         arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -3
+    fi
+
+    # NVIDIA: early-load the driver modules so they load BEFORE the display manager
+    # (and before nouveau could ever appear) - this is what makes the desktop snappy
+    # instead of falling back to the slow nouveau / llvmpipe software renderer.
+    # nvidia-open-utils already blacklists nouveau via /usr/lib/modprobe.d, so we only
+    # need to pin the nvidia modules into the initramfs and rebuild it.
+    if [ "${GPU_FAMILY}" = "nvidia" ]; then
+        sed -i 's/^MODULES=(/MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm /' /mnt/etc/mkinitcpio.conf
+        arch-chroot /mnt mkinitcpio -P 2>&1 | tail -2
+        ok "NVIDIA modules added to initramfs (early-load) and initramfs rebuilt"
     fi
 
     # services - enable from OUTSIDE the chroot with `systemctl --root=/mnt`, which
@@ -702,7 +721,7 @@ main() {
     echo -e "${C_GREEN}[ OK ] Installation complete!${C_RESET}  The system is installed and ready to boot."
     echo "  ── Next steps ──"
     echo "  1. Remove the install media, then reboot:   reboot"
-    echo "  2. In GRUB: default = linux kernel; recover via 'Advanced options' -> linux-lts"
+    echo "  2. In GRUB: default = linux-zen kernel; recover via 'Advanced options' -> linux-lts"
     echo "  3. After login, update:   sudo pacman -Syu"
     echo "  4. Snapshots are ON: Timeshift (daily+weekly, and auto before every pacman update)."
     echo "     Manual restore point:   sudo timeshift --create --comments 'first-boot'"
