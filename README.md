@@ -68,6 +68,15 @@ Seikabook OS 把"装机"拆成两步，第一步让你快速见到桌面，第�
 现场编译 `linux-zen + BORE` 调度器（桌面响应性提升，AMD / Intel 通用），带完整日志，产物是独立包，与官方内核共存、GRUB 随时回退。
 对老手，这是构建自己内核的脚手架与思路起点；对小白，这是"系统已经能跑之后，再进阶折腾"的入口。
 
+进系统后在 KDE 终端里一行跑起来：
+
+```bash
+sudo bash -c "$(curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/seika-kernel.sh)"
+```
+
+脚本会自动检测当前内核、编译 `linux-zen + BORE`、安装并写入 GRUB；重启后在 GRUB 的 **Advanced options** 里选 zen 内核即可。
+任何时候都能回退到官方 `linux` / `linux-lts` —— 增强内核只是多一个选项，不替你换掉默认。
+
 > 内核编译是"学习"的一部分 —— 先让桌面跑起来，再开始折腾。
 
 ---
