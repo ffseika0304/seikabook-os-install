@@ -312,12 +312,16 @@ setup_disk() {
     mkfs.btrfs -f "$ROOT_PART" >/dev/null && ok "root $ROOT_PART (BTRFS)"
     mount "$ROOT_PART" /mnt
     btrfs subvolume create /mnt/@ >/dev/null
+    btrfs subvolume create /mnt/@home >/dev/null
     umount /mnt
 
     MOUNT_OPTS="noatime,compress=zstd:1"
     mount -o "${MOUNT_OPTS},subvol=@" "$ROOT_PART" /mnt
     mkdir -p /mnt/boot
-    # /home: separate ext4 partition if selected, otherwise just a dir inside /
+    # /home: snapshots must protect the SYSTEM (/), never user data.
+    #  - selected  -> a separate ext4 partition (naturally outside BTRFS, never snapshotted)
+    #  - not picked -> the @home subvolume on the same BTRFS; Timeshift exclude_home=true
+    #                excludes it, so user data is never snapshotted either.
     if [ -n "$PART_HOME_DEV" ]; then
         HOME_PART=$(make_part "$PART_HOME_DEV" "$PART_HOME_TGT" 8300)
         if [ "$PART_HOME_FMT" = "1" ]; then
@@ -327,11 +331,11 @@ setup_disk() {
         fi
         mount -o noatime "$HOME_PART" /mnt/home
     else
-        mkdir -p /mnt/home
-        ok "/home lives inside / (BTRFS @ subvolume, no separate partition)"
+        mount -o "${MOUNT_OPTS},subvol=@home" "$ROOT_PART" /mnt/home
+        ok "/home is the @home subvolume (same BTRFS disk, excluded from Timeshift snapshots)"
     fi
     mount "$EFI_PART" /mnt/boot
-    ok "Mount done (root @ on BTRFS; /home as chosen; Timeshift stores snapshots on this same disk)"
+    ok "Mount done (root @ snapshotted by Timeshift; user data /home never snapshotted)"
 }
 
 # ════════════════════════════════════════════════════════════
@@ -442,9 +446,9 @@ printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/
     esac
 
     # Timeshift BTRFS mode: root is the @ subvolume, snapshots live on the same disk.
-    # If /home is a separate ext4 partition it is naturally outside BTRFS and never
-    # snapshotted; if /home is inside / it is included in @ snapshots (exclude_home is set
-    # but only takes effect when a separate @home subvolume exists, which we do not create).
+    # Snapshots protect the SYSTEM (/), never user data:
+    #  - /home selected  -> separate ext4 partition, naturally outside BTRFS, never snapshotted
+    #  - /home not picked -> @home subvolume; exclude_home=true excludes it from snapshots
     ROOT_UUID=$(blkid -s UUID -o value "$ROOT_PART" 2>/dev/null || true)
     mkdir -p /mnt/etc/timeshift
     cat > /mnt/etc/timeshift/timeshift.json <<EOF
@@ -512,7 +516,7 @@ main() {
     if [ -n "$PART_HOME_DEV" ]; then
         echo "  /home: $(fmt_t "$PART_HOME_DEV" "$PART_HOME_TGT") (ext4$([ "$PART_HOME_FMT" = "1" ] && echo ', [format]' || echo ', [keep data]'))"
     else
-        echo "  /home: inside / (BTRFS @, no separate partition)"
+        echo "  /home: BTRFS @home subvolume (same disk; Timeshift excludes it - user data not snapshotted)"
     fi
     echo "  swap : $(fmt_t "$PART_SWAP_DEV" "$PART_SWAP_TGT")"
     echo "  Boot : ${BOOT_MODE}   Desktop: ${DESKTOP}   Hostname: ${HOSTNAME}   User: ${USER_NAME}"
