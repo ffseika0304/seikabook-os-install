@@ -31,6 +31,54 @@ if [ ! -t 0 ] && [ -z "${SEIKA_REEXEC:-}" ]; then
 fi
 
 # ════════════════════════════════════════════════════════════
+# 0.0 前期准备：中文显示环境 + 镜像源（必须排在最前）
+#     直接在 archiso 本地 tty 跑时默认渲染不了中文，交互会乱码；
+#     SSH 连 archiso 由客户端渲染中文，不受影响。本段让本地 tty
+#     也能显示中文，并提前配好镜像源以加速后续所有下载。
+# ════════════════════════════════════════════════════════════
+bench_mirror() {
+    say "测速国内镜像源..."
+    BEST=""; BEST_T=999
+    for entry in \
+        "https://mirrors.tuna.tsinghua.edu.cn/archlinux" \
+        "https://mirrors.aliyun.com/archlinux" \
+        "https://mirrors.ustc.edu.cn/archlinux"; do
+        t=$(curl -o /dev/null -s --connect-timeout 8 -w "%{time_total}" \
+            "${entry}/core/os/x86_64/core.db" 2>/dev/null || echo 999)
+        echo "    $(echo ${t}s)  ${entry}"
+        if awk "BEGIN{exit !(${t} < ${BEST_T})}"; then BEST_T=${t}; BEST=${entry}; fi
+    done
+    [ -n "${BEST}" ] || die "所有镜像源都不可达，请检查网络"
+    ok "最快源: ${BEST} (${BEST_T}s)"
+    echo "Server = ${BEST}/\$repo/os/\$arch" > /etc/pacman.d/mirrorlist
+}
+
+preflight() {
+    # 1) 镜像源：提前测速选最快国内源（保证下载/字体不慢）。
+    #    包在子 shell 里，网络不可达时仅警告、不致命退出。
+    ( bench_mirror ) 2>/dev/null || true
+
+    # 2) 中文 locale（archiso 默认已是 UTF-8，这里确保 zh_CN 可用并导出）
+    sed -i 's/^#zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen 2>/dev/null || true
+    locale-gen >/dev/null 2>&1 || true
+    export LANG=zh_CN.UTF-8 LC_ALL=zh_CN.UTF-8
+
+    # 3) 中文字体（fbterm 渲染 / 后续桌面均用）
+    pacman -Sy --noconfirm --needed wqy-zenhei noto-fonts-cjk >/dev/null 2>&1 || true
+
+    # 4) 仅在物理 tty（非 SSH）切 fbterm，使本地控制台可见中文；SSH 下跳过
+    if [ -z "${SSH_TTY:-}" ] && [ -t 1 ] && command -v fbterm >/dev/null 2>&1; then
+        FONT=$(fc-list 2>/dev/null | grep -iE 'wqy|wenquanyi' | head -1 | cut -d: -f2 | xargs)
+        [ -n "${FONT}" ] && printf 'font=%s\n' "$FONT" > ~/.fbtermrc
+        exec fbterm -- bash "$0" "$@"
+    fi
+}
+if [ -z "${SEIKA_PREFLIGHT:-}" ]; then
+    export SEIKA_PREFLIGHT=1
+    preflight
+fi
+
+# ════════════════════════════════════════════════════════════
 # 0. 基础检查：必须 root、必须 archiso 环境
 # ════════════════════════════════════════════════════════════
 [ "$(id -u)" -eq 0 ] || die "请以 root 身份运行（从 Arch ISO 启动后执行）"
@@ -256,24 +304,8 @@ setup_disk() {
 }
 
 # ════════════════════════════════════════════════════════════
-# 6. 镜像源测速（清华/阿里/中科大）
+# 6. 镜像源测速（bench_mirror 已在上方 0.0 提前定义，供 preflight 与 main 复用）
 # ════════════════════════════════════════════════════════════
-bench_mirror() {
-    say "测速国内镜像源..."
-    BEST=""; BEST_T=999
-    for entry in \
-        "https://mirrors.tuna.tsinghua.edu.cn/archlinux" \
-        "https://mirrors.aliyun.com/archlinux" \
-        "https://mirrors.ustc.edu.cn/archlinux"; do
-        t=$(curl -o /dev/null -s --connect-timeout 8 -w "%{time_total}" \
-            "${entry}/core/os/x86_64/core.db" 2>/dev/null || echo 999)
-        echo "    $(echo ${t}s)  ${entry}"
-        if awk "BEGIN{exit !(${t} < ${BEST_T})}"; then BEST_T=${t}; BEST=${entry}; fi
-    done
-    [ -n "${BEST}" ] || die "所有镜像源都不可达，请检查网络"
-    ok "最快源: ${BEST} (${BEST_T}s)"
-    echo "Server = ${BEST}/\$repo/os/\$arch" > /etc/pacman.d/mirrorlist
-}
 
 # ════════════════════════════════════════════════════════════
 # 7. pacstrap 基础系统 + 桌面
