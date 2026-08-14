@@ -291,7 +291,21 @@ setup_disk() {
         local dev="$1" tgt="$2" type="$3"
         if [[ "$tgt" == free:* ]]; then
             local size="${tgt#free:}"
-            sgdisk -n0:0:"${size}" -t0:"${type}" "${dev}" >/dev/null
+            # Carve from the LARGEST free region's START sector (sgdisk -F prints just the start).
+            # We create free: partitions sequentially (/ then /home then swap=rest), each time
+            # re-reading the largest free region, so "swap = all remaining" must be created LAST.
+            local fs; fs=$(sgdisk -F "${dev}" 2>/dev/null | head -1)
+            if [ -z "$fs" ]; then
+                echo "ERROR: no free space left on ${dev} to create a partition" >&2
+                return 1
+            fi
+            if [ -z "$size" ] || [ "$size" = "0" ]; then
+                sgdisk -n0:"${fs}":0 -t0:"${type}" "${dev}" >/dev/null \
+                    || { echo "ERROR: failed to create partition in free space on ${dev}" >&2; return 1; }
+            else
+                sgdisk -n0:"${fs}":"${size}" -t0:"${type}" "${dev}" >/dev/null \
+                    || { echo "ERROR: failed to create ${size} partition in free space on ${dev}" >&2; return 1; }
+            fi
             partprobe "${dev}"
             local new; new=$(lsblk -rn -o NAME "${dev}" | tail -1)
             echo "/dev/${new}"
@@ -301,9 +315,6 @@ setup_disk() {
     }
     EFI_PART=$(make_part "$PART_EFI_DEV" "$PART_EFI_TGT" ef00)
     [ "$PART_EFI_FMT" = "1" ] && mkfs.fat -F32 "$EFI_PART" >/dev/null && ok "EFI $EFI_PART (FAT32)"
-
-    SWAP_PART=$(make_part "$PART_SWAP_DEV" "$PART_SWAP_TGT" 8200)
-    mkswap "$SWAP_PART" >/dev/null && swapon "$SWAP_PART" && ok "swap $SWAP_PART"
 
     ROOT_PART=$(make_part "$PART_ROOT_DEV" "$PART_ROOT_TGT" 8300)
     mkfs.btrfs -f "$ROOT_PART" >/dev/null && ok "root $ROOT_PART (BTRFS)"
@@ -331,6 +342,9 @@ setup_disk() {
         mount -o "${MOUNT_OPTS},subvol=@home" "$ROOT_PART" /mnt/home
         ok "/home is the @home subvolume (same BTRFS disk, excluded from Timeshift snapshots)"
     fi
+    # swap is created LAST so "all remaining" really means "whatever is left after / and /home"
+    SWAP_PART=$(make_part "$PART_SWAP_DEV" "$PART_SWAP_TGT" 8200)
+    mkswap "$SWAP_PART" >/dev/null && swapon "$SWAP_PART" && ok "swap $SWAP_PART"
     mount "$EFI_PART" /mnt/boot
     ok "Mount done (root @ snapshotted by Timeshift; user data /home never snapshotted)"
 }
