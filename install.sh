@@ -430,19 +430,37 @@ printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/
     ok "User ${USER_NAME} created (added to sudo group)"
 
     # bootloader
+    GRUB_OK=1
     if [ "${BOOT_MODE}" = "UEFI" ]; then
-        arch-chroot /mnt grub-install --target=x86_64-efi \
-            --efi-directory=/boot --bootloader-id=GRUB >/dev/null 2>&1 \
-            && ok "GRUB UEFI installed" || die "GRUB UEFI install failed, system will not boot"
+        # make sure the EFI partition is actually mounted where GRUB expects it
+        mountpoint -q /mnt/boot || mount "${EFI_PART}" /mnt/boot 2>/dev/null || true
+        # efivarfs must be mounted so grub-install can register the boot entry
+        [ -d /sys/firmware/efi ] && { [ -d /sys/firmware/efi/efivars ] || \
+            mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null || true; }
+        rm -f /tmp/grub.err
+        if arch-chroot /mnt grub-install --target=x86_64-efi \
+            --efi-directory=/boot --bootloader-id=GRUB 2>/tmp/grub.err; then
+            ok "GRUB UEFI installed"
+        else
+            echo "  ----- grub-install error -----"; sed 's/^/  /' /tmp/grub.err; echo "  --------------------------------"
+            GRUB_OK=0
+        fi
     else
-        arch-chroot /mnt grub-install --target=i386-pc "${PART_ROOT_DEV}" >/dev/null 2>&1 \
-            && ok "GRUB BIOS installed" || die "GRUB BIOS install failed, system will not boot"
+        rm -f /tmp/grub.err
+        if arch-chroot /mnt grub-install --target=i386-pc "${PART_ROOT_DEV}" 2>/tmp/grub.err; then
+            ok "GRUB BIOS installed"
+        else
+            echo "  ----- grub-install error -----"; sed 's/^/  /' /tmp/grub.err; echo "  --------------------------------"
+            GRUB_OK=0
+        fi
     fi
     # dual-boot
     if [ "${KEEP_WINDOWS}" = "1" ]; then
         echo 'GRUB_DISABLE_OS_PROBER=false' >> /mnt/etc/default/grub
     fi
-    arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -1
+    if [ "${GRUB_OK}" = "1" ]; then
+        arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -3
+    fi
 
     # services
     arch-chroot /mnt systemctl enable NetworkManager >/dev/null 2>&1
@@ -549,6 +567,22 @@ main() {
     echo "     sudo timeshift --create --comments 'first-boot'"
     echo "  5. Want a snappier desktop? sudo bash -c \"\$(curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/seika-kernel.sh)\""
     echo "══════════════════════════════════════════════"
+    if [ "${GRUB_OK:-1}" = "0" ]; then
+        echo
+        warn "GRUB bootloader was NOT installed (see error above). The system is fully installed but will NOT boot until you fix it."
+        echo "  From the live ISO, chroot and install GRUB manually:"
+        echo "    mount -o subvol=@ ${ROOT_PART} /mnt"
+        echo "    mount ${EFI_PART} /mnt/boot"
+        echo "    [ -d /sys/firmware/efi/efivars ] || mount -t efivarfs efivarfs /sys/firmware/efi/efivars"
+        echo "    arch-chroot /mnt"
+        if [ "${BOOT_MODE}" = "UEFI" ]; then
+            echo "    grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB"
+        else
+            echo "    grub-install --target=i386-pc ${PART_ROOT_DEV}"
+        fi
+        echo "    grub-mkconfig -o /boot/grub/grub.cfg"
+        echo "    exit"
+    fi
 }
 
 main "$@"
