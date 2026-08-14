@@ -542,6 +542,11 @@ printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/
     fi
     # btrfs root subvolume: tells 10_linux + grub-btrfs the system lives in @
     echo 'GRUB_BTRFS_ROOT_SUBVOLUME="@"' >> /mnt/etc/default/grub
+    # default to the FIRST menu entry = latest standard kernel (linux), never linux-lts.
+    # 10_linux always puts `Arch Linux` (the linux package) first; linux-lts lives in
+    # the "Advanced options" submenu. Pin it so a rebuild can never silently boot lts.
+    echo 'GRUB_DEFAULT=0' >> /mnt/etc/default/grub
+    echo 'GRUB_SAVEDEFAULT=false' >> /mnt/etc/default/grub
     if [ "${GRUB_OK}" = "1" ]; then
         arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -3
     fi
@@ -554,6 +559,15 @@ printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/
     enable_svc() { systemctl --root=/mnt enable "$1" >/dev/null 2>&1 || true; }
     enable_svc NetworkManager
     enable_svc cronie
+    # SDDM is KDE Plasma's own display manager; lock its login screen to the
+    # native Plasma (breeze) theme so it reads as "Plasma", not vanilla SDDM.
+    if [ "${DESKTOP}" = "kde" ]; then
+        mkdir -p /mnt/etc/sddm.conf.d
+        cat > /mnt/etc/sddm.conf.d/10-plasma-theme.conf <<'EOF'
+[Theme]
+Current=breeze
+EOF
+    fi
     local dm="sddm"
     case "${DESKTOP}" in
         gnome) dm="gdm" ;;
