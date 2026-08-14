@@ -418,12 +418,12 @@ install_base() {
     PACKAGES="base base-devel linux linux-firmware linux-lts \
 btrfs-progs grub efibootmgr os-prober ntfs-3g timeshift grub-btrfs \
 networkmanager cronie sudo vim git \
-$( [ "${DESKTOP}" = "kde" ] && echo "plasma-meta sddm konsole dolphin ark gwenview \
+$( [ "${DESKTOP}" = "kde" ] && echo "plasma-meta plasma-login-manager konsole dolphin ark gwenview \
 fcitx5-im fcitx5-chinese-addons fcitx5-configtool \
 noto-fonts noto-fonts-cjk noto-fonts-emoji wqy-microhei" || true ) \
 $( [ "${DESKTOP}" = "gnome" ] && echo "gnome gnome-extra gdm fcitx5-im fcitx5-chinese-addons \
 noto-fonts noto-fonts-cjk" || true ) \
-$( [ "${DESKTOP}" = "hyprland" ] && echo "hyprland waybar rofi-wayland kitty \
+$( [ "${DESKTOP}" = "hyprland" ] && echo "hyprland sddm waybar rofi-wayland kitty \
 fcitx5-im fcitx5-chinese-addons noto-fonts noto-fonts-cjk" || true ) \
 $( [ "${DESKTOP}" = "headless" ] && echo "openssh cronie" || true )"
 
@@ -551,32 +551,41 @@ printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/
         arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -3
     fi
 
-    # services - enable reliably from OUTSIDE the chroot.
-    # `systemctl enable` inside arch-chroot silently no-ops for display-manager units
-    # (and Timeshift ships no .timer on Arch), so we use `systemctl --root=/mnt` for
-    # multi-user units and symlink the display manager directly. All are best-effort
-    # (guarded) so a single failure can never abort the whole install.
+    # services - enable from OUTSIDE the chroot with `systemctl --root=/mnt`, which
+    # resolves [Install] WantedBy *and* Alias against the target root (verified).
+    # Timeshift ships no .timer on Arch, so its scheduling is handled via cron below.
+    # All enables are best-effort (guarded) so a single failure can never abort the install.
     enable_svc() { systemctl --root=/mnt enable "$1" >/dev/null 2>&1 || true; }
     enable_svc NetworkManager
     enable_svc cronie
-    # SDDM is KDE Plasma's own display manager; lock its login screen to the
-    # native Plasma (breeze) theme so it reads as "Plasma", not vanilla SDDM.
-    if [ "${DESKTOP}" = "kde" ]; then
-        mkdir -p /mnt/etc/sddm.conf.d
-        cat > /mnt/etc/sddm.conf.d/10-plasma-theme.conf <<'EOF'
-[Theme]
-Current=breeze
-EOF
-    fi
-    local dm="sddm"
+    # Display manager.
+    # IMPORTANT: on Arch a DM unit carries `[Install] Alias=display-manager.service`
+    # and graphical.target pulls display-manager.service. There is NO
+    # "display-manager.target.wants" directory -- symlinking into it enables NOTHING.
+    # Enabling correctly must produce /etc/systemd/system/display-manager.service,
+    # which `systemctl --root=/mnt enable` does (verified: it honours the Alias).
+    #
+    # KDE: since Plasma 6.6 the login manager is Plasma Login Manager
+    # (pkg plasma-login-manager, unit plasmalogin.service) -- a KDE fork of SDDM that
+    # replaces it and is already a plasma-meta dependency. Its greeter runs natively on
+    # kwin_wayland (plasma-login-kwin_wayland.service), so the session is Wayland by
+    # default and no X11 fallback config is needed. Theming is integrated with Plasma,
+    # so there is no external greeter theme to pin.
+    local dm=""
     case "${DESKTOP}" in
-        gnome) dm="gdm" ;;
+        kde)      dm="plasmalogin" ;;
+        gnome)    dm="gdm" ;;
+        hyprland) dm="sddm" ;;
         headless) dm="" ;;
     esac
     if [ -n "${dm}" ]; then
-        mkdir -p /mnt/etc/systemd/system/display-manager.target.wants
-        ln -sf "/usr/lib/systemd/system/${dm}.service" \
-               "/mnt/etc/systemd/system/display-manager.target.wants/${dm}.service"
+        enable_svc "${dm}.service"
+        if [ -L /mnt/etc/systemd/system/display-manager.service ]; then
+            ok "Display manager enabled: ${dm}"
+        else
+            warn "Could not enable ${dm}. After first boot, log in on the text console and run:"
+            warn "  systemctl enable ${dm}.service"
+        fi
     else
         enable_svc sshd
     fi
