@@ -1,43 +1,47 @@
 #!/usr/bin/env bash
 # ============================================================
-#  Seikabook OS Install — 你的硬件，它的灵魂。
-#  理念：让中文母语的小白先进入 KDE 桌面，再开始学习，
-#        而不是卡在 archiso 的黑屏命令行里。
+#  Seikabook OS Install - your hardware, its soul.
+#  Idea: get Chinese-speaking beginners into the KDE desktop
+#        first, then learn - not stuck at the archiso prompt.
 #
-#  第一段：装系统（本脚本）—— 从 Arch ISO 启动，约 30 分钟到 KDE 桌面
-#  第二段：seika-kernel.sh（可选）—— 进系统后编译 zen+BORE 增强内核
+#  Step 1: install the system (this script) - boot from Arch ISO,
+#          ~30 min to a working KDE desktop.
+#  Step 2: seika-kernel.sh (optional) - compile the zen+BORE
+#          enhanced kernel after first boot.
 #
-#  用法：bash install.sh    （仅限 archiso 环境；不接收复杂参数）
+#  Usage: bash install.sh   (archiso only; no complex arguments)
 # ============================================================
 set -euo pipefail
 
 C_RESET="\e[0m"; C_BLUE="\e[1;34m"; C_GREEN="\e[1;32m"; C_YEL="\e[1;33m"; C_RED="\e[1;31m"
 say()  { echo -e "${C_BLUE}[Seikabook]${C_RESET} $*"; }
 ok()   { echo -e "${C_GREEN}[ OK ]${C_RESET} $*"; }
-warn() { echo -e "${C_YEL}[注意]${C_RESET} $*"; }
-die()  { echo -e "${C_RED}[错误]${C_RESET} $*" >&2; exit 1; }
+warn() { echo -e "${C_YEL}[WARN]${C_RESET} $*"; }
+die()  { echo -e "${C_RED}[ERROR]${C_RESET} $*" >&2; exit 1; }
 
 # ────────────────────────────────────────────────────────────
-# 0.0 管道自愈：curl | bash 时 stdin 是管道，交互 read/select 会
-#     读到 EOF 自断。检测到非终端输入就重新以 /dev/tty 重跑自身。
+# 0.0 Pipe self-heal: when run as "curl | bash", stdin is a pipe
+#     and interactive read/select hit EOF and abort. If stdin is
+#     not a tty, re-run ourselves with /dev/tty as stdin.
 # ────────────────────────────────────────────────────────────
 SELF_URL="https://gitee.com/seikabook/seikabook-os-install/raw/master/install.sh"
 if [ ! -t 0 ] && [ -z "${SEIKA_REEXEC:-}" ]; then
-    say "检测到管道输入，重新以终端交互方式运行…"
+    say "Pipe input detected, re-running in interactive (tty) mode..."
     curl -fsSL "$SELF_URL" -o /tmp/seika-install.sh \
-        || die "重新下载安装脚本失败，请改用两步法：curl -o /tmp/i.sh && bash /tmp/i.sh"
+        || die "Failed to re-download the script. Use two-step instead: curl -o /tmp/i.sh && bash /tmp/i.sh"
     export SEIKA_REEXEC=1
     exec bash /tmp/seika-install.sh < /dev/tty
 fi
 
 # ════════════════════════════════════════════════════════════
-# 0.0 前期准备：中文显示环境 + 镜像源（必须排在最前）
-#     直接在 archiso 本地 tty 跑时默认渲染不了中文，交互会乱码；
-#     SSH 连 archiso 由客户端渲染中文，不受影响。本段让本地 tty
-#     也能显示中文，并提前配好镜像源以加速后续所有下载。
+# 0.0 Preflight: mirror + locale (must run first)
+#     On the local archiso tty, Chinese cannot render (no CJK
+#     console font / fbterm removed from repos). Over SSH the
+#     client renders Chinese fine, so this only matters for tty.
+#     We still set the locale and pick a fast mirror up front.
 # ════════════════════════════════════════════════════════════
 bench_mirror() {
-    say "测速国内镜像源..."
+    say "Benchmarking China mirrors..."
     BEST=""; BEST_T=999
     for entry in \
         "https://mirrors.tuna.tsinghua.edu.cn/archlinux" \
@@ -48,33 +52,33 @@ bench_mirror() {
         echo "    $(echo ${t}s)  ${entry}"
         if awk "BEGIN{exit !(${t} < ${BEST_T})}"; then BEST_T=${t}; BEST=${entry}; fi
     done
-    [ -n "${BEST}" ] || die "所有镜像源都不可达，请检查网络"
-    ok "最快源: ${BEST} (${BEST_T}s)"
+    [ -n "${BEST}" ] || die "All mirrors unreachable, check your network"
+    ok "Fastest mirror: ${BEST} (${BEST_T}s)"
     echo "Server = ${BEST}/\$repo/os/\$arch" > /etc/pacman.d/mirrorlist
 }
 
 preflight() {
-    # 1) 镜像源：提前测速选最快国内源（保证下载/字体不慢）。
-    #    包在子 shell 里，网络不可达时仅警告、不致命退出。
+    # 1) Mirror: benchmark and pick the fastest China mirror early.
+    #    Wrapped in a subshell so a network failure only warns, not fatal.
     ( bench_mirror ) 2>/dev/null || true
 
-    # 2) 中文 locale（archiso 默认已是 UTF-8，这里确保 zh_CN 可用并导出）
+    # 2) Locale: archiso is already UTF-8; ensure zh_CN is available.
     sed -i 's/^#zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen 2>/dev/null || true
     locale-gen >/dev/null 2>&1 || true
     export LANG=zh_CN.UTF-8 LC_ALL=zh_CN.UTF-8
 
-    # 3) 物理控制台中文说明（重要，避免无谓折腾）
-    #    stock archiso 已无法在本地控制台显示中文：
-    #      - fbterm 已从 Arch 官方源移除（pacman 报 target not found），无现成帧缓冲终端；
-    #      - setfont 受内核控制台 256/512 字形槽限制，CJK 上万个字装不下 → 必方框；
-    #      - 官方 archinstall 在本机物理控制台中文同样方块，印证是环境限制。
-    #    唯一可靠做法：用 SSH 终端运行本脚本（SSH 客户端本就正常显示中文）。
-    #    装系统流程本身不受影响，仅交互界面中文观感问题。
+    # 3) Local console Chinese note (important, avoids wasted effort)
+    #    stock archiso cannot show Chinese on the local console:
+    #      - fbterm was removed from the Arch official repos (target not found)
+    #      - setfont is limited to 256/512 glyph slots, far too few for CJK
+    #      - official archinstall also shows boxes on this machine's console
+    #    The only reliable way: run this script over an SSH session
+    #    (the SSH client renders Chinese fine). Install flow is unaffected.
     if [ -z "${SSH_TTY:-}" ] && [ -t 1 ]; then
-        warn "检测到你在物理控制台(本地 tty)运行：stock archiso 本地控制台无法显示中文"
-        warn "(fbterm 已从官方源移除、setfont 字形槽限制也渲染不了 CJK；官方 archinstall 同样如此)。"
-        warn "建议改用 SSH 连接 archiso 后再运行本脚本，SSH 客户端可正常显示中文。"
-        warn "装系统流程不受影响，按提示(可凭英文/拼音关键词)操作即可。"
+        warn "You are on the local console (tty): stock archiso cannot show Chinese here"
+        warn "(fbterm was removed from the repos; setfont cannot render CJK either; archinstall is the same)."
+        warn "Recommend: connect via SSH and run this script; the SSH client shows Chinese fine."
+        warn "Install flow is unaffected; just follow the prompts (English/pinyin keywords work)."
     fi
 }
 if [ -z "${SEIKA_PREFLIGHT:-}" ]; then
@@ -83,102 +87,103 @@ if [ -z "${SEIKA_PREFLIGHT:-}" ]; then
 fi
 
 # ════════════════════════════════════════════════════════════
-# 0. 基础检查：必须 root、必须 archiso 环境
+# 0. Basic checks: must be root, should be archiso
 # ════════════════════════════════════════════════════════════
-[ "$(id -u)" -eq 0 ] || die "请以 root 身份运行（从 Arch ISO 启动后执行）"
+[ "$(id -u)" -eq 0 ] || die "Run as root (boot from the Arch ISO first)"
 
 if [ ! -d /run/archiso ] && [ ! -f /etc/arch-release ]; then
-    warn "未检测到 archiso 环境。本脚本用于【全新安装】（从 Arch ISO 启动后运行）。"
-    warn "如果你已在运行的系统里，请勿继续——装好后想优化内核请用 seika-kernel.sh。"
-    read -rp "确认是在 archiso 安装环境？[y/N] " ans
+    warn "archiso environment not detected. This script is for a FRESH install (run after booting the Arch ISO)."
+    warn "If you are already on a running system, stop - use seika-kernel.sh later to tune the kernel."
+    read -rp "Confirm you are in the archiso installer? [y/N] " ans
     [[ "${ans,,}" == "y" ]] || exit 1
 fi
 
-say "Seikabook OS Install 启动 —— 先看看你的机器，再决定怎么装。"
+say "Seikabook OS Install starting - let's look at your machine first."
 echo
 
 # ════════════════════════════════════════════════════════════
-# 1. 硬件检测
+# 1. Hardware detection
 # ════════════════════════════════════════════════════════════
 detect_hardware() {
     echo
-    say "────────── 硬件检测 ──────────"
+    say "────────── Hardware detection ──────────"
     CPU_VENDOR="$(lscpu 2>/dev/null | awk -F': *' '/^Vendor ID/{print $2; exit}')"
     CPU_MODEL="$(lscpu 2>/dev/null | awk -F': *' '/^Model name/{print $2; exit}')"
-    echo "CPU    : ${CPU_MODEL:-未知}（${CPU_VENDOR:-未知} / $(nproc) 线程）"
+    echo "CPU    : ${CPU_MODEL:-unknown} (${CPU_VENDOR:-unknown} / $(nproc) threads)"
     case "${CPU_VENDOR,,}" in
         *amd*) CPU_FAMILY="amd" ;;
         *intel*) CPU_FAMILY="intel" ;;
         *) CPU_FAMILY="unknown" ;;
     esac
     GPU_LINE="$(lspci 2>/dev/null | grep -iE 'VGA|3D controller|Display controller' | head -1 || true)"
-    echo "GPU    : ${GPU_LINE:-未知}"
+    echo "GPU    : ${GPU_LINE:-unknown}"
     case "${GPU_LINE,,}" in
         *nvidia*) GPU_FAMILY="nvidia" ;;
         *advanced\ micro\ devices*) GPU_FAMILY="amd" ;;
         *intel*) GPU_FAMILY="intel" ;;
         *) GPU_FAMILY="unknown" ;;
     esac
-    echo "内存   : $(free -h | awk '/^Mem:/{print $2}')"
-    echo "磁盘   :"
+    echo "Memory : $(free -h | awk '/^Mem:/{print $2}')"
+    echo "Disks  :"
     lsblk -d -o NAME,SIZE,MODEL 2>/dev/null | grep -vE 'NAME|loop' | head -6 || true
     if [ -d /sys/firmware/efi ]; then BOOT_MODE="UEFI"; else BOOT_MODE="BIOS"; fi
-    echo "引导   : ${BOOT_MODE}"
-    echo "────────── 检测完毕 ──────────"
+    echo "Boot   : ${BOOT_MODE}"
+    echo "────────── Detection done ──────────"
 }
 
 # ════════════════════════════════════════════════════════════
-# 2. 按硬件给内核/驱动方案
+# 2. Suggest kernel/driver plan by hardware
 # ════════════════════════════════════════════════════════════
 suggest_plan() {
     echo
-    say "你的硬件方案："
+    say "Your hardware plan:"
     case "${CPU_FAMILY}" in
-        amd)    echo "  · CPU: AMD → 装好后可用 seika-kernel.sh 编译 zen+BORE 增强内核" ;;
-        intel)  echo "  · CPU: Intel → 装好后可用 seika-kernel.sh 编译 zen+BORE 增强内核" ;;
-        *)      echo "  · CPU: 未知厂商 → 使用官方内核" ;;
+        amd)    echo "  - CPU: AMD - after install, use seika-kernel.sh to build the zen+BORE kernel" ;;
+        intel)  echo "  - CPU: Intel - after install, use seika-kernel.sh to build the zen+BORE kernel" ;;
+        *)      echo "  - CPU: unknown vendor - use the official kernel" ;;
     esac
     case "${GPU_FAMILY}" in
-        amd)    echo "  · GPU: AMD → amdgpu + Mesa 开源驱动，零配置" ;;
-        nvidia) echo "  · GPU: NVIDIA → 装好后用 nvidia-dkms（本脚本先装开源 nouveau 保证能进桌面）" ;;
-        intel)  echo "  · GPU: Intel → i915/xe 开源驱动，零配置" ;;
-        *)      echo "  · GPU: 未知 → 装好后用 lspci 再确认" ;;
+        amd)    echo "  - GPU: AMD - amdgpu + Mesa open driver, zero config" ;;
+        nvidia) echo "  - GPU: NVIDIA - use nvidia-dkms after install (this script installs open nouveau first so you can boot)" ;;
+        intel)  echo "  - GPU: Intel - i915/xe open driver, zero config" ;;
+        *)      echo "  - GPU: unknown - check with lspci after install" ;;
     esac
-    echo "  · 内核: 预装官方 linux + linux-lts 双内核（GRUB 可切换），增强内核后续可选"
-    echo "  · 桌面: KDE Plasma（中文用户最友好的现代桌面）"
+    echo "  - Kernel: official linux + linux-lts dual kernel preinstalled (switch in GRUB), enhanced kernel optional later"
+    echo "  - Desktop: KDE Plasma (the most beginner-friendly modern desktop)"
 }
 
 # ════════════════════════════════════════════════════════════
-# 3. 引导式问答（小白只做选择题）
+# 3. Guided questions (beginners just pick)
 # ════════════════════════════════════════════════════════════
 ask_questions() {
     echo
-    say "几个问题，不用懂，照喜好选："
+    say "A few questions - just pick what you like:"
     echo
-    PS3="  桌面环境？[1-4] "
-    select DE_CHOICE in "KDE（推荐，中文用户友好）" "GNOME" "Hyprland（平铺窗口，进阶）" "无头服务器（最小化）"; do
+    PS3="  Desktop environment? [1-4] "
+    select DE_CHOICE in "KDE (recommended, beginner-friendly)" "GNOME" "Hyprland (tiling, advanced)" "Headless server (minimal)"; do
         case "${DE_CHOICE}" in
             *KDE*) DESKTOP="kde"; break ;;
             *GNOME*) DESKTOP="gnome"; break ;;
             *Hyprland*) DESKTOP="hyprland"; break ;;
-            *无头*) DESKTOP="headless"; break ;;
-            *) echo "  选 1-4" ;;
+            *Headless*) DESKTOP="headless"; break ;;
+            *) echo "  Pick 1-4" ;;
         esac
     done
-    read -rp "  保留 Windows 双系统？[y/N] " ans
+    read -rp "  Keep Windows dual-boot? [y/N] " ans
     [[ "${ans,,}" == "y" ]] && KEEP_WINDOWS=1 || KEEP_WINDOWS=0
-    read -rp "  自动测速选择国内最快镜像源？[Y/n] " ans
+    read -rp "  Auto-pick fastest China mirror? [Y/n] " ans
     [[ "${ans,,}" == "n" ]] && AUTO_MIRROR=0 || AUTO_MIRROR=1
-    read -rp "  主机名？[默认 arch] " ans
+    read -rp "  Hostname? [default arch] " ans
     HOSTNAME="${ans:-arch}"
-    read -rp "  用户名？[默认 seika] " ans
+    read -rp "  Username? [default seika] " ans
     USER_NAME="${ans:-seika}"
 }
 
 # ════════════════════════════════════════════════════════════
-# 4. 分区选择（引导式：一键自动 / 手动逐个挂载点指定）
-#    挂载点：EFI、/、/home、swap；每步先选硬盘，再选〔现有分区│空闲空间〕
-#    空闲空间可指定容量(如 100G/512M)，留空=该盘全部剩余空间
+# 4. Partition selection (guided: one-click auto / manual per mountpoint)
+#    Mountpoints: EFI, /, /home, swap; each step pick disk first,
+#    then pick [existing partition | free space].
+#    Free space can take a size (e.g. 100G / 512M); empty = all remaining.
 # ════════════════════════════════════════════════════════════
 PART_EFI_DEV= PART_EFI_TGT= PART_EFI_FMT=1
 PART_ROOT_DEV= PART_ROOT_TGT=
@@ -188,33 +193,33 @@ HOME_IS_SUBVOL=0
 
 pick_disk() {
     local disks=($(lsblk -d -rno NAME)); local i=1
-    echo "  可用磁盘:"
+    echo "  Available disks:"
     for d in "${disks[@]}"; do echo "    $i) /dev/$d"; i=$((i+1)); done
     while :; do
-        read -rp "  选择磁盘编号: " n
+        read -rp "  Pick disk number: " n
         if [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le "${#disks[@]}" ]; then
             _DISK="/dev/${disks[$((n-1))]}"; return 0
         fi
-        warn "无效编号"
+        warn "Invalid number"
     done
 }
 
 pick_target() {
-    # $1=磁盘(dev)  $2=标签(如 EFI)
+    # $1=disk(dev)  $2=label(e.g. EFI)
     local dev="$1" label="$2"
-    echo "  [${label}] 在 ${dev} 上选择目标:"
-    echo "    0) 空闲空间（脚本新建分区）"
+    echo "  [${label}] choose target on ${dev}:"
+    echo "    0) Free space (script creates a new partition)"
     local plist=($(lsblk -rn -o NAME,PARTN "$dev" | awk '$2!="" {print $1}')); local i=1
     for p in "${plist[@]}"; do
         echo "    $i) /dev/$p  ($(lsblk -dn -o SIZE "/dev/$p"))"; i=$((i+1))
     done
     while :; do
-        read -rp "  选编号(0=空闲空间): " n
+        read -rp "  Pick number (0=free space): " n
         if [ "$n" = "0" ]; then
             local size
-            read -rp "    空闲空间用量(如 100G / 512M，留空=全部剩余): " size
+            read -rp "    Free space size (e.g. 100G / 512M, empty = all remaining): " size
             if [ -n "$size" ]; then
-                [[ "$size" =~ ^[0-9]+(M|G)$ ]] || { warn "容量格式应为 数字+G/M，如 100G"; continue; }
+                [[ "$size" =~ ^[0-9]+(M|G)$ ]] || { warn "Size must be like 100G or 512M"; continue; }
                 size="+${size}"
             else
                 size=0
@@ -223,29 +228,29 @@ pick_target() {
         elif [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le "${#plist[@]}" ]; then
             _TGT="part:/dev/${plist[$((n-1))]}"; return 0
         fi
-        warn "无效编号"
+        warn "Invalid number"
     done
 }
 
 manual_partition() {
-    say "手动模式：逐个挂载点选择（先选硬盘，再选该盘上的分区或空闲空间）"
-    say "步骤 1/4 —— EFI 分区"
+    say "Manual mode: pick each mountpoint (disk first, then a partition or free space on it)"
+    say "Step 1/4 - EFI partition"
     pick_disk; PART_EFI_DEV="$_DISK"; pick_target "$_DISK" EFI; PART_EFI_TGT="$_TGT"
     if [[ "$PART_EFI_TGT" == part:* ]]; then
-        read -rp "  格式化该 EFI 分区? [y/N] " f
+        read -rp "  Format this EFI partition? [y/N] " f
         [[ "${f,,}" == "y" ]] && PART_EFI_FMT=1 || PART_EFI_FMT=0
     fi
-    say "步骤 2/4 —— 根 / 分区"
+    say "Step 2/4 - root / partition"
     pick_disk; PART_ROOT_DEV="$_DISK"; pick_target "$_DISK" ROOT; PART_ROOT_TGT="$_TGT"
-    say "步骤 3/4 —— /home 分区"
+    say "Step 3/4 - /home partition"
     pick_disk; PART_HOME_DEV="$_DISK"; pick_target "$_DISK" HOME; PART_HOME_TGT="$_TGT"
-    say "步骤 4/4 —— swap 分区"
+    say "Step 4/4 - swap partition"
     pick_disk; PART_SWAP_DEV="$_DISK"; pick_target "$_DISK" SWAP; PART_SWAP_TGT="$_TGT"
 }
 
 oneclick_partition() {
     local ram; ram=$(free -g 2>/dev/null | awk '/^Mem:/{print $2}'); [ -z "$ram" ] && ram=4; [ "$ram" -lt 2 ] && ram=2
-    say "一键模式：选一块盘，自动从空闲空间划分 EFI(1G)+/(剩余)+/home(子卷)+swap(${ram}G)"
+    say "One-click mode: pick a disk, auto split EFI(1G)+/(rest)+/home(subvol)+swap(${ram}G) from free space"
     pick_disk
     PART_EFI_DEV="$_DISK"; PART_EFI_TGT="free:+1G"; PART_EFI_FMT=1
     PART_ROOT_DEV="$_DISK"; PART_ROOT_TGT="free:0"
@@ -255,17 +260,17 @@ oneclick_partition() {
 
 choose_disk() {
     echo
-    say "分区方案：1) 一键（选一块盘自动划分）   2) 手动（逐个挂载点指定，推荐）"
-    read -rp "  选择 [1/2，默认 2]: " m
+    say "Partition plan: 1) one-click (pick a disk, auto split)   2) manual (per mountpoint, recommended)"
+    read -rp "  Choose [1/2, default 2]: " m
     [ "${m:-2}" = "1" ] && oneclick_partition || manual_partition
 }
 
 # ════════════════════════════════════════════════════════════
-# 5. 分区 + 格式化 + BTRFS 子卷
+# 5. Partition + format + BTRFS subvolumes
 # ════════════════════════════════════════════════════════════
 setup_disk() {
-    say "按选定结构分区与挂载（将写入磁盘）..."
-    # $1=磁盘 $2=tgt(part:/dev/xxx | free:+SIZE | free:0) $3=typecode → 输出分区设备路径
+    say "Partitioning and mounting per your plan (writing to disk)..."
+    # $1=disk $2=tgt(part:/dev/xxx | free:+SIZE | free:0) $3=typecode -> prints partition device path
     make_part() {
         local dev="$1" tgt="$2" type="$3"
         if [[ "$tgt" == free:* ]]; then
@@ -285,7 +290,7 @@ setup_disk() {
     mkswap "$SWAP_PART" >/dev/null && swapon "$SWAP_PART" && ok "swap $SWAP_PART"
 
     ROOT_PART=$(make_part "$PART_ROOT_DEV" "$PART_ROOT_TGT" 8300)
-    mkfs.btrfs -f "$ROOT_PART" >/dev/null && ok "根 $ROOT_PART (BTRFS)"
+    mkfs.btrfs -f "$ROOT_PART" >/dev/null && ok "root $ROOT_PART (BTRFS)"
     mount "$ROOT_PART" /mnt
     btrfs subvolume create /mnt/@ >/dev/null
     btrfs subvolume create /mnt/@snapshots >/dev/null
@@ -304,19 +309,21 @@ setup_disk() {
         mount -o "${MOUNT_OPTS}" "$HOME_PART" /mnt/home
     fi
     mount "$EFI_PART" /mnt/boot
-    ok "挂载完成"
+    ok "Mount done"
 }
 
 # ════════════════════════════════════════════════════════════
-# 6. 镜像源测速（bench_mirror 已在上方 0.0 提前定义，供 preflight 与 main 复用）
+# 6. Mirror benchmark (bench_mirror defined earlier at 0.0,
+#    reused by preflight and main)
 # ════════════════════════════════════════════════════════════
 
 # ════════════════════════════════════════════════════════════
-# 7. pacstrap 基础系统 + 桌面
+# 7. pacstrap base system + desktop
 # ════════════════════════════════════════════════════════════
 install_base() {
-    # 注意: $( [ ... ] && echo ... || true ) 必须带 || true——
-    # 否则条件为假时命令替换退出码=1, 赋值语句在 set -e 下直接退出(经典陷阱)
+    # Note: $( [ ... ] && echo ... || true ) must keep || true --
+    # otherwise when the condition is false the substitution exits 1,
+    # and under set -e the assignment would abort (classic trap)
     PACKAGES="base base-devel linux linux-firmware linux-lts \
 btrfs-progs grub efibootmgr os-prober ntfs-3g \
 networkmanager sudo vim git \
@@ -329,26 +336,26 @@ $( [ "${DESKTOP}" = "hyprland" ] && echo "hyprland waybar rofi-wayland kitty \
 fcitx5-im fcitx5-chinese-addons noto-fonts noto-fonts-cjk" || true ) \
 $( [ "${DESKTOP}" = "headless" ] && echo "openssh cronie" || true )"
 
-    say "安装基础系统 + 桌面（约 10-15 分钟，取决于网速）..."
+    say "Installing base system + desktop (~10-15 min, depends on network)..."
     pacstrap -K /mnt ${PACKAGES} 2>&1 | tail -3
     genfstab -U /mnt >> /mnt/etc/fstab
-    ok "基础系统安装完成"
+    ok "Base system installed"
 }
 
 # ════════════════════════════════════════════════════════════
-# 8. chroot 系统配置
+# 8. chroot system configuration
 # ════════════════════════════════════════════════════════════
 configure_system() {
-    say "配置系统（时区/语言/用户/引导/桌面服务）..."
+    say "Configuring system (timezone/locale/user/boot/desktop)..."
 
-    # 测速结果写入新系统（pacstrap 不自动带 host 的 mirrorlist）
+    # Write benchmark result into the new system (pacstrap does not copy host mirrorlist)
     if [ "${AUTO_MIRROR}" = "1" ] && [ -n "${BEST:-}" ]; then
         echo "Server = ${BEST}/\$repo/os/\$arch" > /mnt/etc/pacman.d/mirrorlist
     fi
 
     arch-chroot /mnt bash -c "
 set -e
-# 时区
+# timezone
 ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
 hwclock --systohc
 # locale
@@ -356,54 +363,54 @@ sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 sed -i 's/^#zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen
 locale-gen >/dev/null 2>&1
 echo 'LANG=zh_CN.UTF-8' > /etc/locale.conf
-# 主机名
+# hostname
 echo '${HOSTNAME}' > /etc/hostname
 printf '127.0.0.1 localhost\n::1 localhost\n127.0.1.1 ${HOSTNAME}\n' > /etc/hosts
-# 镜像源（chroot 内也用测速结果——由外部写入）
-# 输入法环境变量
+    # Mirror (chroot also uses benchmark result - written from outside)
+    # Input method env vars
 printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/environment
 " 2>&1 | tail -2
 
-    # root 密码
+    # root password
     echo
     while :; do
-        read -rsp "  设置 root 密码: " PASS1; echo
-        read -rsp "  再次输入: " PASS2; echo
+        read -rsp "  Set root password: " PASS1; echo
+        read -rsp "  Retype: " PASS2; echo
         [ -n "${PASS1}" ] && [ "${PASS1}" = "${PASS2}" ] && break
-        warn "两次输入不一致或为空，重来"
+        warn "Mismatch or empty, try again"
     done
     echo "root:${PASS1}" | arch-chroot /mnt chpasswd
 
-    # 用户
+    # user
     echo
     while :; do
-        read -rsp "  设置用户 ${USER_NAME} 的密码: " PASS1; echo
-        read -rsp "  再次输入: " PASS2; echo
+        read -rsp "  Set password for user ${USER_NAME}: " PASS1; echo
+        read -rsp "  Retype: " PASS2; echo
         [ -n "${PASS1}" ] && [ "${PASS1}" = "${PASS2}" ] && break
-        warn "两次输入不一致或为空，重来"
+        warn "Mismatch or empty, try again"
     done
     arch-chroot /mnt useradd -m -G wheel -s /bin/bash "${USER_NAME}"
     echo "${USER_NAME}:${PASS1}" | arch-chroot /mnt chpasswd
     echo "%wheel ALL=(ALL:ALL) ALL" > /mnt/etc/sudoers.d/10-wheel
     chmod 440 /mnt/etc/sudoers.d/10-wheel
-    ok "用户 ${USER_NAME} 创建完成（已加入 sudo 组）"
+    ok "User ${USER_NAME} created (added to sudo group)"
 
-    # 引导
+    # bootloader
     if [ "${BOOT_MODE}" = "UEFI" ]; then
         arch-chroot /mnt grub-install --target=x86_64-efi \
             --efi-directory=/boot --bootloader-id=GRUB >/dev/null 2>&1 \
-            && ok "GRUB UEFI 安装完成" || die "GRUB UEFI 安装失败，系统将无法引导"
+            && ok "GRUB UEFI installed" || die "GRUB UEFI install failed, system will not boot"
     else
         arch-chroot /mnt grub-install --target=i386-pc "${PART_ROOT_DEV}" >/dev/null 2>&1 \
-            && ok "GRUB BIOS 安装完成" || die "GRUB BIOS 安装失败，系统将无法引导"
+            && ok "GRUB BIOS installed" || die "GRUB BIOS install failed, system will not boot"
     fi
-    # 双系统
+    # dual-boot
     if [ "${KEEP_WINDOWS}" = "1" ]; then
         echo 'GRUB_DISABLE_OS_PROBER=false' >> /mnt/etc/default/grub
     fi
     arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -1
 
-    # 服务
+    # services
     arch-chroot /mnt systemctl enable NetworkManager >/dev/null 2>&1
     case "${DESKTOP}" in
         kde) arch-chroot /mnt systemctl enable sddm >/dev/null 2>&1 ;;
@@ -411,11 +418,11 @@ printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/
         hyprland) arch-chroot /mnt systemctl enable sddm >/dev/null 2>&1 ;;
         headless) arch-chroot /mnt systemctl enable sshd >/dev/null 2>&1 ;;
     esac
-    ok "服务已启用"
+    ok "Services enabled"
 }
 
 # ════════════════════════════════════════════════════════════
-# 9. 主流程
+# 9. Main flow
 # ════════════════════════════════════════════════════════════
 main() {
     detect_hardware
@@ -423,26 +430,26 @@ main() {
     ask_questions
     choose_disk
     echo
-    say "────────── 分区结构确认 ──────────"
+    say "────────── Partition plan review ──────────"
     fmt_t() {
         local d="$1" t="$2"
         if [[ "$t" == free:* ]]; then
-            local s="${t#free:}"; [ "$s" = "0" ] && s="全部剩余"
-            echo "$d 空闲空间(${s})"
+            local s="${t#free:}"; [ "$s" = "0" ] && s="all remaining"
+            echo "$d free space (${s})"
         else
             echo "${t#part:}"
         fi
     }
-    echo "  EFI  : $(fmt_t "$PART_EFI_DEV" "$PART_EFI_TGT")  $([ "$PART_EFI_FMT" = "1" ] && echo '[格式化]' || echo '[保留,仅挂载]')"
+    echo "  EFI  : $(fmt_t "$PART_EFI_DEV" "$PART_EFI_TGT")  $([ "$PART_EFI_FMT" = "1" ] && echo '[format]' || echo '[keep, mount only]')"
     echo "  /    : $(fmt_t "$PART_ROOT_DEV" "$PART_ROOT_TGT")"
-    echo "  /home: $([ "$HOME_IS_SUBVOL" = "1" ] && echo '（/ 的 BTRFS 子卷 @home）' || echo "$(fmt_t "$PART_HOME_DEV" "$PART_HOME_TGT")")"
+    echo "  /home: $([ "$HOME_IS_SUBVOL" = "1" ] && echo '(BTRFS subvolume @home of /)' || echo "$(fmt_t "$PART_HOME_DEV" "$PART_HOME_TGT")")"
     echo "  swap : $(fmt_t "$PART_SWAP_DEV" "$PART_SWAP_TGT")"
-    echo "  引导 : ${BOOT_MODE}   桌面: ${DESKTOP}   主机名: ${HOSTNAME}   用户: ${USER_NAME}"
-    echo "  Windows: $([ "${KEEP_WINDOWS}" = "1" ] && echo 保留双系统 || echo 不保留)   镜像源: $([ "${AUTO_MIRROR}" = "1" ] && echo 自动测速 || echo 手动配置)"
+    echo "  Boot : ${BOOT_MODE}   Desktop: ${DESKTOP}   Hostname: ${HOSTNAME}   User: ${USER_NAME}"
+    echo "  Windows: $([ "${KEEP_WINDOWS}" = "1" ] && echo keep dual-boot || echo none)   Mirror: $([ "${AUTO_MIRROR}" = "1" ] && echo auto-benchmark || echo manual)"
     echo "─────────────────────────────────"
-    echo "  ⚠️ 以上将【清空所选分区/磁盘上的数据】，且不可逆！"
-    read -rp "  输入大写的 YES 确认按此结构分区并格式化: " ans
-    [ "$ans" = "YES" ] || { say "已取消，未做任何更改"; exit 0; }
+    echo "  WARNING: the above will ERASE data on the selected partitions/disks, and is NOT reversible!"
+    read -rp "  Type the word YES (uppercase) to confirm and start partitioning: " ans
+    [ "$ans" = "YES" ] || { say "Cancelled, no changes made"; exit 0; }
 
     [ "${AUTO_MIRROR}" = "1" ] && bench_mirror
     setup_disk
@@ -451,11 +458,11 @@ main() {
 
     echo
     echo "══════════════════════════════════════════════"
-    ok "安装完成！"
-    echo "  1. 输入 exit / reboot 重启（记得拔掉安装盘）"
-    echo "  2. 进 GRUB 后：默认 linux 内核，回退用 Advanced options 选 linux-lts"
-    echo "  3. 登录后第一件事：sudo pacman -Syu 更新"
-    echo "  4. 想提升桌面响应？sudo bash -c \"\$(curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/seika-kernel.sh)\""
+    ok "Installation complete!"
+    echo "  1. Run 'exit' / 'reboot' (remember to remove the install media)"
+    echo "  2. In GRUB: default is the linux kernel; fall back via 'Advanced options' -> linux-lts"
+    echo "  3. After login, first thing: sudo pacman -Syu to update"
+    echo "  4. Want a snappier desktop? sudo bash -c \"\$(curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/seika-kernel.sh)\""
     echo "══════════════════════════════════════════════"
 }
 
