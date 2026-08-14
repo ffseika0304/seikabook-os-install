@@ -371,7 +371,10 @@ setup_disk() {
     mkfs.btrfs -f "$ROOT_PART" >/dev/null && ok "root $ROOT_PART (BTRFS)"
     mount "$ROOT_PART" /mnt
     btrfs subvolume create /mnt/@ >/dev/null
-    btrfs subvolume create /mnt/@home >/dev/null
+    if [ -z "$PART_HOME_DEV" ]; then
+        # /home stays inside / -> use the @home subvolume (excluded from Timeshift snapshots)
+        btrfs subvolume create /mnt/@home >/dev/null
+    fi
     umount /mnt
 
     MOUNT_OPTS="noatime,compress=zstd:1"
@@ -414,7 +417,7 @@ install_base() {
     # and under set -e the assignment would abort (classic trap)
     PACKAGES="base base-devel linux linux-firmware linux-lts \
 btrfs-progs grub efibootmgr os-prober ntfs-3g timeshift grub-btrfs \
-networkmanager sudo vim git \
+networkmanager cronie sudo vim git \
 $( [ "${DESKTOP}" = "kde" ] && echo "plasma-meta sddm konsole dolphin ark gwenview \
 fcitx5-im fcitx5-chinese-addons fcitx5-configtool \
 noto-fonts noto-fonts-cjk noto-fonts-emoji wqy-microhei" || true ) \
@@ -530,14 +533,26 @@ printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/
         arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -3
     fi
 
-    # services
-    arch-chroot /mnt systemctl enable NetworkManager >/dev/null 2>&1
+    # services - enable reliably from OUTSIDE the chroot.
+    # `systemctl enable` inside arch-chroot silently no-ops for display-manager units
+    # (and Timeshift ships no .timer on Arch), so we use `systemctl --root=/mnt` for
+    # multi-user units and symlink the display manager directly. All are best-effort
+    # (guarded) so a single failure can never abort the whole install.
+    enable_svc() { systemctl --root=/mnt enable "$1" >/dev/null 2>&1 || true; }
+    enable_svc NetworkManager
+    enable_svc cronie
+    local dm="sddm"
     case "${DESKTOP}" in
-        kde) arch-chroot /mnt systemctl enable sddm >/dev/null 2>&1 ;;
-        gnome) arch-chroot /mnt systemctl enable gdm >/dev/null 2>&1 ;;
-        hyprland) arch-chroot /mnt systemctl enable sddm >/dev/null 2>&1 ;;
-        headless) arch-chroot /mnt systemctl enable sshd >/dev/null 2>&1 ;;
+        gnome) dm="gdm" ;;
+        headless) dm="" ;;
     esac
+    if [ -n "${dm}" ]; then
+        mkdir -p /mnt/etc/systemd/system/display-manager.target.wants
+        ln -sf "/usr/lib/systemd/system/${dm}.service" \
+               "/mnt/etc/systemd/system/display-manager.target.wants/${dm}.service"
+    else
+        enable_svc sshd
+    fi
 
     # Timeshift BTRFS mode: root is the @ subvolume, snapshots live on the same disk.
     # Snapshots protect the SYSTEM (/), never user data:
@@ -579,11 +594,31 @@ printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/
   "run_ionice" : "true"
 }
 EOF
-    arch-chroot /mnt systemctl enable timeshift.timer >/dev/null 2>&1
-    arch-chroot /mnt systemctl enable grub-btrfsd.service >/dev/null 2>&1 || true
+    enable_svc grub-btrfsd.service
+    # Scheduled snapshots: Timeshift has NO systemd timer on Arch - it runs via cron.
+    # Enable cronie and drop Timeshift's standard cron job (--check every 10 min creates
+    # the daily/weekly snapshots defined in the json above).
+    cat > /mnt/etc/cron.d/timeshift <<'EOF'
+*/10 * * * * root /usr/bin/timeshift --check --scripted
+EOF
+    # Snapshot BEFORE every pacman transaction, so a bad update is always revertible.
+    mkdir -p /mnt/etc/pacman.d/hooks
+    cat > /mnt/etc/pacman.d/hooks/50-timeshift-pre.hook <<'EOF'
+[Trigger]
+Operation = Upgrade
+Operation = Install
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = Timeshift: creating snapshot before pacman transaction...
+When = PreTransaction
+Exec = /usr/bin/timeshift --create --comments "pacman pre-upgrade" --scripted
+EOF
     echo 'GRUB_BTRFS_Timeshift=true' >> /mnt/etc/default/grub-btrfs 2>/dev/null || true
-    ok "Timeshift (BTRFS mode) configured + scheduled; grub-btrfs enabled"
-    ok "Services enabled"
+    ok "Timeshift (BTRFS mode) configured: scheduled via cronie + pre-upgrade pacman hook; grub-btrfs enabled"
+    ok "Services enabled (NetworkManager, ${dm:-sshd}, cronie, grub-btrfsd)"
 }
 
 # ════════════════════════════════════════════════════════════
@@ -628,13 +663,14 @@ main() {
 
     echo
     echo "══════════════════════════════════════════════"
-    ok "Installation complete!"
-    echo "  1. Run 'exit' / 'reboot' (remember to remove the install media)"
-    echo "  2. In GRUB: default is the linux kernel; fall back via 'Advanced options' -> linux-lts"
-    echo "  3. After login, first thing: sudo pacman -Syu to update"
-    echo "  4. Snapshots: Timeshift is preconfigured (BTRFS mode, daily+weekly). Make a restore point:"
-    echo "     sudo timeshift --create --comments 'first-boot'"
-    echo "  5. Want a snappier desktop? sudo bash -c \"\$(curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/seika-kernel.sh)\""
+    echo -e "${C_GREEN}[ OK ] Installation complete!${C_RESET}  The system is installed and ready to boot."
+    echo "  ── Next steps ──"
+    echo "  1. Remove the install media, then reboot:   reboot"
+    echo "  2. In GRUB: default = linux kernel; recover via 'Advanced options' -> linux-lts"
+    echo "  3. After login, update:   sudo pacman -Syu"
+    echo "  4. Snapshots are ON: Timeshift (daily+weekly, and auto before every pacman update)."
+    echo "     Manual restore point:   sudo timeshift --create --comments 'first-boot'"
+    echo "  5. Snappier kernel?   sudo bash -c \"\$(curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/seika-kernel.sh)\""
     echo "══════════════════════════════════════════════"
     if [ "${GRUB_OK:-1}" = "0" ]; then
         echo
