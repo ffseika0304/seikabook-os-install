@@ -2,11 +2,28 @@
 
 一个为**个人数字主权**而生的 Arch Linux 增强方案。
 
-不是发行版，不是开源的通用框架——是作者自己用着顺手、分享给同好的**社群作品**。
-它的理念只有一句话：
+不是发行版，是作者自己用着顺手、分享给同好的**社群作品**。
 
-> **让中文母语的小白先进入 KDE 桌面，再开始学习。
-> 而不是卡在 archiso 的黑屏命令行里。**
+它的理念只有一句话，但同一套工具同时服务两类人：
+
+> **小白**：先进入 KDE 桌面，再开始折腾 Arch 系统。
+> **老手**：在 archiso 的黑屏命令行里，也能快速恢复环境、拿到构建内核的思路。
+
+---
+
+## 两种人，两条路
+
+**你是小白 —— 别在黑屏里背命令。**
+从 Arch ISO 启动，跑一个脚本，半小时内坐进 KDE。
+桌面、中文输入法、字体、网络、双内核全都给你配好。
+**等你舒服地用上系统了，再回头学 Arch** —— 分区、快照、内核，都是从桌面里打开终端慢慢玩的事。
+Seikabook OS 给你的是一个"已经会跑"的起点，不是一份待办清单。
+
+**你是老手 —— 黑屏命令行也是主场。**
+archiso 里你没有 GUI，但你清楚自己要什么：
+- 用同一套脚本，把任意一台新硬件**快速恢复成你熟悉的 Arch 环境**（内核策略 / 驱动 / 镜像源 / 桌面一次到位）；
+- `seika-kernel.sh` 不替你决定内核长什么样，而是给你一份**现场编译 zen + BORE 的现成思路与脚手架** —— 改调度器、加补丁、调编译参数，从这份基底开始。
+它把"装机经验"固化成可复用的脚本，让你把时间花在真正想折腾的地方。
 
 ---
 
@@ -17,7 +34,7 @@
 - 不同硬件（AMD / NVIDIA / Intel）需要不同的内核、驱动、调度策略
 - 想用 BTRFS 快照、双内核防滚挂，但手动配置太繁琐
 - 国内网络环境下，装个软件、拉个镜像都费劲
-- 明明是 Arch，却要先背一串 archiso 命令才能见到桌面
+- 小白被 archiso 黑屏劝退，老手却又每次重配一遍环境
 
 Seikabook OS 把这些经验打包进一个脚本，只留一个入口：
 
@@ -30,12 +47,12 @@ curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/install.sh
 ## 它有什么
 
 - **硬件感知**：自动识别 CPU / GPU，选型对应内核策略与驱动
-- **通用增强内核（可选）**：`seika-kernel.sh` 一键编译 linux-zen 底包 + BORE 调度器——不预分发任何内核包，在你的机器上现场编译，AMD / Intel 通用
-- **双内核并行（zen + lts）**：一个跑性能，一个跑稳定，GRUB 菜单自由切换
-- **BTRFS + Timeshift 快照**：@ / @home / @snapshots 结构预置，滚挂了秒回退
+- **双内核并行（官方 linux + linux-lts）**：一个跑性能，一个跑稳定，GRUB 菜单自由切换；可选 `seika-kernel.sh` 现场编译 linux-zen + BORE 增强内核（AMD / Intel 通用，与官方内核共存、随时回退）
+- **BTRFS + Timeshift 快照**：`@` 根子卷 + `@home` 用户子卷（用户数据默认不进快照，只保系统），滚挂了秒回退
+- **引导式手动分区**：EFI / / /home（可选）/ swap 逐步选，空闲空间自动建分区；双系统单 EFI 友好（也支持跨盘选 EFI）
 - **国内镜像源自动测速**：清华 / 阿里 / 中科大，选最快
-- **双系统 GRUB 兼容**：自动识别 Windows，支持调整菜单优先级
-- **桌面环境可选**：KDE / GNOME / Hyprland / 无头模式
+- **双系统 GRUB 兼容**：自动识别 Windows（os-prober），保留双启
+- **桌面环境可选**：KDE（默认，最友好）/ GNOME / Hyprland / 无头模式
 - **中文环境开箱即用**：locale / fcitx5 / 中文字体 一键配好
 - **NVIDIA 闭源驱动支持**：nvidia-dkms + 对应内核 headers 自动匹配
 
@@ -45,13 +62,13 @@ curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/install.sh
 
 Seikabook OS 把"装机"拆成两步，第一步让你快速见到桌面，第二步才是锦上添花：
 
-**第一段：装系统（install.sh）** —— 从 Arch ISO 启动，30 分钟到 KDE 桌面
+**第一段：装系统（install.sh）** —— 从 Arch ISO 启动，引导式分区 + 安装，约 30 分钟到 KDE 桌面。小白到这里就能正常使用了。
 
-**第二段：增强内核（seika-kernel.sh）** —— 进系统后想优化时再跑，现场编译
-`linux-zen + BORE` 调度器（桌面响应性提升，AMD / Intel 通用），
-编译过程带完整日志，产物是独立包，与官方内核共存、GRUB 随时回退。
+**第二段：增强内核（seika-kernel.sh）** —— 进系统后想优化时再跑。
+现场编译 `linux-zen + BORE` 调度器（桌面响应性提升，AMD / Intel 通用），带完整日志，产物是独立包，与官方内核共存、GRUB 随时回退。
+对老手，这是构建自己内核的脚手架与思路起点；对小白，这是"系统已经能跑之后，再进阶折腾"的入口。
 
-> 内核编译是"学习"的一部分——先让桌面跑起来，再开始折腾。
+> 内核编译是"学习"的一部分 —— 先让桌面跑起来，再开始折腾。
 
 ---
 
@@ -71,13 +88,14 @@ Seikabook OS 把"装机"拆成两步，第一步让你快速见到桌面，第�
 curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/install.sh | bash
 ```
 
-不需要手动分区，不需要先配置网络，不需要查 CPU 型号。
-脚本会引导你完成每一步（分区 / 网络 / 桌面选择），并根据你的硬件自动做选择。
+脚本一步步引导你：选桌面 → 选是否保留 Windows 双启 → 引导式分区（EFI / / /home 可选 / swap，空闲空间可自动建分区）→ 设用户。
+不需要先查 CPU 型号，不需要手配网络，硬件与镜像源会自动处理。
 
-> **当前状态**：`install.sh` 主流程 **v1.0（已在虚拟机全流程实测通过）**——
-> 从 archiso 引导到装出可独立启动的 KDE 系统，全程验证 OK（含双内核 / fcitx5 / GRUB 引导 / 用户登录）。
+> **当前状态**：`install.sh` 已在**真实硬件（双盘 / 双启 / 单 EFI）全流程实测通过** ——
+> 从 archiso 引导到装出可独立启动的 KDE 系统，含双内核 / fcitx5 / GRUB 引导（含跨盘 EFI）/ Windows 双启项 / Timeshift BTRFS 模式，全程验证 OK。
+> 自动分区模式已移除（未实测），手动分区为当前唯一入口。
 > `seika-kernel.sh` 增强内核脚本可用。
-> 欢迎提 issue 反馈你遇到的硬件和问题——你踩过的坑会沉淀进下一版。
+> 欢迎提 issue 反馈你遇到的硬件和问题 —— 你踩过的坑会沉淀进下一版。
 
 ---
 
@@ -91,7 +109,9 @@ curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/install.sh
 - 一台 AMD 工作站
 - 一台 Intel + NVIDIA 双显卡笔记本
 - 一台无头服务器（LTS 内核 + 最小化服务）
-- 一台家里常开的低功耗设备（x86_64 / aarch64）
+- 一台家里常开的低功耗设备
+
+小白用它快速落地一个能用的桌面；老手用它把环境一键恢复、把内核构建思路跑通。
 
 只要它能跑 Arch（x86_64 / aarch64），就能用 Seikabook OS 来规划它的运行方式。
 
@@ -111,4 +131,5 @@ curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/install.sh
 ## 最后的备注
 
 你在别的发行版里花在"排查为什么这个硬件不工作"上的时间，
-可以在 Seikabook OS 里，花在你真正想做的事情上。
+可以在 Seikabook OS 里，花在你真正想做的事情上 ——
+无论是小白坐进 KDE 后慢慢学，还是老手在黑屏里三下五除二恢复战场。
