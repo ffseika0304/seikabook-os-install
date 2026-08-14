@@ -181,13 +181,16 @@ ask_questions() {
 
 # ════════════════════════════════════════════════════════════
 # 4. Partition selection (guided: one-click auto / manual per mountpoint)
-#    Partitions: EFI, / (root BTRFS), swap; each step pick disk first,
-#    then pick [existing partition | free space].
-#    /home is always a BTRFS subvolume (@home) of the root (no separate pick).
+#    Mountpoints: EFI, / (root), /home (OPTIONAL), swap.
+#    Each step pick disk first, then pick [existing partition | free space].
+#    /home is OPTIONAL (this is the closed loop):
+#      - not selected -> /home is just a directory inside / (the BTRFS @ subvolume)
+#      - selected     -> a separate ext4 partition, with a format (y/N) prompt
 #    Free space can take a size (e.g. 100G / 512M); empty = all remaining.
 # ════════════════════════════════════════════════════════════
 PART_EFI_DEV= PART_EFI_TGT= PART_EFI_FMT=1
 PART_ROOT_DEV= PART_ROOT_TGT=
+PART_HOME_DEV= PART_HOME_TGT= PART_HOME_FMT=0
 PART_SWAP_DEV= PART_SWAP_TGT=
 
 pick_disk() {
@@ -238,22 +241,36 @@ pick_target() {
 
 manual_partition() {
     say "Manual mode: pick each partition (disk first, then a partition or free space on it)"
-    say "Note: /home is always a BTRFS subvolume (@home) of the root filesystem, so it is not a separate partition."
-    say "Step 1/3 - EFI partition"
+    say "/home is optional: skip it and /home stays inside / (BTRFS @); pick it and it becomes a separate ext4 partition."
+    say "Step 1/4 - EFI partition"
     pick_disk; PART_EFI_DEV="$_DISK"; pick_target "$_DISK" EFI; PART_EFI_TGT="$_TGT"
     if [[ "$PART_EFI_TGT" == part:* ]]; then
         read -rp "  Format this EFI partition? [y/N] " f
         [[ "${f,,}" == "y" ]] && PART_EFI_FMT=1 || PART_EFI_FMT=0
     fi
-    say "Step 2/3 - root / partition (BTRFS, holds @ and @home)"
+    say "Step 2/4 - root / partition (BTRFS, holds the @ subvolume + Timeshift snapshots)"
     pick_disk; PART_ROOT_DEV="$_DISK"; pick_target "$_DISK" ROOT; PART_ROOT_TGT="$_TGT"
-    say "Step 3/3 - swap partition"
+    say "Step 3/4 - /home partition (optional; press N to keep /home inside /)"
+    read -rp "  Use a separate /home partition? [y/N] " h
+    if [[ "${h,,}" == "y" ]]; then
+        pick_disk; PART_HOME_DEV="$_DISK"; pick_target "$_DISK" HOME; PART_HOME_TGT="$_TGT"
+        if [[ "$PART_HOME_TGT" == part:* ]]; then
+            read -rp "  Format this /home partition as ext4? [y/N] " f
+            [[ "${f,,}" == "y" ]] && PART_HOME_FMT=1 || PART_HOME_FMT=0
+        else
+            PART_HOME_FMT=1   # new partition from free space -> always format
+        fi
+    else
+        PART_HOME_DEV=; PART_HOME_TGT=; PART_HOME_FMT=0
+        ok "/home will live inside / (BTRFS @), no separate partition"
+    fi
+    say "Step 4/4 - swap partition"
     pick_disk; PART_SWAP_DEV="$_DISK"; pick_target "$_DISK" SWAP; PART_SWAP_TGT="$_TGT"
 }
 
 oneclick_partition() {
     local ram; ram=$(free -g 2>/dev/null | awk '/^Mem:/{print $2}'); [ -z "$ram" ] && ram=4; [ "$ram" -lt 2 ] && ram=2
-    say "One-click mode: pick a disk, auto split EFI(1G)+/(rest, BTRFS @ + @home)+swap(${ram}G) from free space"
+    say "One-click mode: pick a disk, auto split EFI(1G)+/(rest, BTRFS @; /home stays inside /)+swap(${ram}G) from free space"
     pick_disk
     PART_EFI_DEV="$_DISK"; PART_EFI_TGT="free:+1G"; PART_EFI_FMT=1
     PART_ROOT_DEV="$_DISK"; PART_ROOT_TGT="free:0"
@@ -295,15 +312,26 @@ setup_disk() {
     mkfs.btrfs -f "$ROOT_PART" >/dev/null && ok "root $ROOT_PART (BTRFS)"
     mount "$ROOT_PART" /mnt
     btrfs subvolume create /mnt/@ >/dev/null
-    btrfs subvolume create /mnt/@home >/dev/null
     umount /mnt
 
     MOUNT_OPTS="noatime,compress=zstd:1"
     mount -o "${MOUNT_OPTS},subvol=@" "$ROOT_PART" /mnt
-    mkdir -p /mnt/{home,boot}
-    mount -o "${MOUNT_OPTS},subvol=@home" "$ROOT_PART" /mnt/home
+    mkdir -p /mnt/boot
+    # /home: separate ext4 partition if selected, otherwise just a dir inside /
+    if [ -n "$PART_HOME_DEV" ]; then
+        HOME_PART=$(make_part "$PART_HOME_DEV" "$PART_HOME_TGT" 8300)
+        if [ "$PART_HOME_FMT" = "1" ]; then
+            mkfs.ext4 -F "$HOME_PART" >/dev/null && ok "/home $HOME_PART (ext4, formatted)"
+        else
+            ok "/home $HOME_PART (ext4, existing data kept)"
+        fi
+        mount -o noatime "$HOME_PART" /mnt/home
+    else
+        mkdir -p /mnt/home
+        ok "/home lives inside / (BTRFS @ subvolume, no separate partition)"
+    fi
     mount "$EFI_PART" /mnt/boot
-    ok "Mount done (root @ + home @home on BTRFS; Timeshift stores snapshots on this same disk)"
+    ok "Mount done (root @ on BTRFS; /home as chosen; Timeshift stores snapshots on this same disk)"
 }
 
 # ════════════════════════════════════════════════════════════
@@ -414,7 +442,9 @@ printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/
     esac
 
     # Timeshift BTRFS mode: root is the @ subvolume, snapshots live on the same disk.
-    # /home (@home) is excluded from snapshots by default to protect user data.
+    # If /home is a separate ext4 partition it is naturally outside BTRFS and never
+    # snapshotted; if /home is inside / it is included in @ snapshots (exclude_home is set
+    # but only takes effect when a separate @home subvolume exists, which we do not create).
     ROOT_UUID=$(blkid -s UUID -o value "$ROOT_PART" 2>/dev/null || true)
     mkdir -p /mnt/etc/timeshift
     cat > /mnt/etc/timeshift/timeshift.json <<EOF
@@ -479,7 +509,11 @@ main() {
     }
     echo "  EFI  : $(fmt_t "$PART_EFI_DEV" "$PART_EFI_TGT")  $([ "$PART_EFI_FMT" = "1" ] && echo '[format]' || echo '[keep, mount only]')"
     echo "  /    : $(fmt_t "$PART_ROOT_DEV" "$PART_ROOT_TGT")"
-    echo "  /home: BTRFS subvolume @home (same disk as /; Timeshift excludes it by default)"
+    if [ -n "$PART_HOME_DEV" ]; then
+        echo "  /home: $(fmt_t "$PART_HOME_DEV" "$PART_HOME_TGT") (ext4$([ "$PART_HOME_FMT" = "1" ] && echo ', [format]' || echo ', [keep data]'))"
+    else
+        echo "  /home: inside / (BTRFS @, no separate partition)"
+    fi
     echo "  swap : $(fmt_t "$PART_SWAP_DEV" "$PART_SWAP_TGT")"
     echo "  Boot : ${BOOT_MODE}   Desktop: ${DESKTOP}   Hostname: ${HOSTNAME}   User: ${USER_NAME}"
     echo "  Windows: $([ "${KEEP_WINDOWS}" = "1" ] && echo keep dual-boot || echo none)   Mirror: $([ "${AUTO_MIRROR}" = "1" ] && echo auto-benchmark || echo manual)"
