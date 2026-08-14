@@ -63,14 +63,19 @@ preflight() {
     locale-gen >/dev/null 2>&1 || true
     export LANG=zh_CN.UTF-8 LC_ALL=zh_CN.UTF-8
 
-    # 3) 中文字体（fbterm 渲染 / 后续桌面均用）
-    pacman -Sy --noconfirm --needed wqy-zenhei noto-fonts-cjk >/dev/null 2>&1 || true
+    # 3) 中文终端 + 字体（物理 tty 显示中文必需 fbterm 终端）
+    pacman -Sy --noconfirm --needed fbterm wqy-zenhei noto-fonts-cjk >/dev/null 2>&1 || true
 
     # 4) 仅在物理 tty（非 SSH）切 fbterm，使本地控制台可见中文；SSH 下跳过
-    if [ -z "${SSH_TTY:-}" ] && [ -t 1 ] && command -v fbterm >/dev/null 2>&1; then
-        FONT=$(fc-list 2>/dev/null | grep -iE 'wqy|wenquanyi' | head -1 | cut -d: -f2 | xargs)
-        [ -n "${FONT}" ] && printf 'font=%s\n' "$FONT" > ~/.fbtermrc
-        exec fbterm -- bash "$0" "$@"
+    if [ -z "${SSH_TTY:-}" ] && [ -t 1 ]; then
+        if command -v fbterm >/dev/null 2>&1; then
+            FONT=$(fc-list 2>/dev/null | grep -iE 'wqy|wenquanyi' | head -1 | cut -d: -f2 | xargs)
+            [ -n "${FONT}" ] && printf 'font=%s\n' "$FONT" > ~/.fbtermrc
+            exec fbterm -- bash "$0" "$@"
+        else
+            warn "未能安装 fbterm，本地控制台可能无法显示中文。"
+            warn "建议改用 SSH 连接 archiso 后再运行本脚本（SSH 客户端可正常显示中文）。"
+        fi
     fi
 }
 if [ -z "${SEIKA_PREFLIGHT:-}" ]; then
