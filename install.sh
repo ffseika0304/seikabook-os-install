@@ -181,15 +181,14 @@ ask_questions() {
 
 # ════════════════════════════════════════════════════════════
 # 4. Partition selection (guided: one-click auto / manual per mountpoint)
-#    Mountpoints: EFI, /, /home, swap; each step pick disk first,
+#    Partitions: EFI, / (root BTRFS), swap; each step pick disk first,
 #    then pick [existing partition | free space].
+#    /home is always a BTRFS subvolume (@home) of the root (no separate pick).
 #    Free space can take a size (e.g. 100G / 512M); empty = all remaining.
 # ════════════════════════════════════════════════════════════
 PART_EFI_DEV= PART_EFI_TGT= PART_EFI_FMT=1
 PART_ROOT_DEV= PART_ROOT_TGT=
-PART_HOME_DEV= PART_HOME_TGT=
 PART_SWAP_DEV= PART_SWAP_TGT=
-HOME_IS_SUBVOL=0
 
 pick_disk() {
     local disks=($(lsblk -d -rno NAME)); local i=1
@@ -238,28 +237,26 @@ pick_target() {
 }
 
 manual_partition() {
-    say "Manual mode: pick each mountpoint (disk first, then a partition or free space on it)"
-    say "Step 1/4 - EFI partition"
+    say "Manual mode: pick each partition (disk first, then a partition or free space on it)"
+    say "Note: /home is always a BTRFS subvolume (@home) of the root filesystem, so it is not a separate partition."
+    say "Step 1/3 - EFI partition"
     pick_disk; PART_EFI_DEV="$_DISK"; pick_target "$_DISK" EFI; PART_EFI_TGT="$_TGT"
     if [[ "$PART_EFI_TGT" == part:* ]]; then
         read -rp "  Format this EFI partition? [y/N] " f
         [[ "${f,,}" == "y" ]] && PART_EFI_FMT=1 || PART_EFI_FMT=0
     fi
-    say "Step 2/4 - root / partition"
+    say "Step 2/3 - root / partition (BTRFS, holds @ and @home)"
     pick_disk; PART_ROOT_DEV="$_DISK"; pick_target "$_DISK" ROOT; PART_ROOT_TGT="$_TGT"
-    say "Step 3/4 - /home partition"
-    pick_disk; PART_HOME_DEV="$_DISK"; pick_target "$_DISK" HOME; PART_HOME_TGT="$_TGT"
-    say "Step 4/4 - swap partition"
+    say "Step 3/3 - swap partition"
     pick_disk; PART_SWAP_DEV="$_DISK"; pick_target "$_DISK" SWAP; PART_SWAP_TGT="$_TGT"
 }
 
 oneclick_partition() {
     local ram; ram=$(free -g 2>/dev/null | awk '/^Mem:/{print $2}'); [ -z "$ram" ] && ram=4; [ "$ram" -lt 2 ] && ram=2
-    say "One-click mode: pick a disk, auto split EFI(1G)+/(rest)+/home(subvol)+swap(${ram}G) from free space"
+    say "One-click mode: pick a disk, auto split EFI(1G)+/(rest, BTRFS @ + @home)+swap(${ram}G) from free space"
     pick_disk
     PART_EFI_DEV="$_DISK"; PART_EFI_TGT="free:+1G"; PART_EFI_FMT=1
     PART_ROOT_DEV="$_DISK"; PART_ROOT_TGT="free:0"
-    PART_HOME_DEV="$_DISK"; PART_HOME_TGT="free:0"; HOME_IS_SUBVOL=1
     PART_SWAP_DEV="$_DISK"; PART_SWAP_TGT="free:+${ram}G"
 }
 
@@ -298,23 +295,15 @@ setup_disk() {
     mkfs.btrfs -f "$ROOT_PART" >/dev/null && ok "root $ROOT_PART (BTRFS)"
     mount "$ROOT_PART" /mnt
     btrfs subvolume create /mnt/@ >/dev/null
-    btrfs subvolume create /mnt/@snapshots >/dev/null
-    [ "$HOME_IS_SUBVOL" = "1" ] && btrfs subvolume create /mnt/@home >/dev/null
+    btrfs subvolume create /mnt/@home >/dev/null
     umount /mnt
 
     MOUNT_OPTS="noatime,compress=zstd:1"
     mount -o "${MOUNT_OPTS},subvol=@" "$ROOT_PART" /mnt
-    mkdir -p /mnt/{home,.snapshots,boot}
-    mount -o "${MOUNT_OPTS},subvol=@snapshots" "$ROOT_PART" /mnt/.snapshots
-    if [ "$HOME_IS_SUBVOL" = "1" ]; then
-        mount -o "${MOUNT_OPTS},subvol=@home" "$ROOT_PART" /mnt/home
-    else
-        HOME_PART=$(make_part "$PART_HOME_DEV" "$PART_HOME_TGT" 8300)
-        mkfs.btrfs -f "$HOME_PART" >/dev/null && ok "/home $HOME_PART (BTRFS)"
-        mount -o "${MOUNT_OPTS}" "$HOME_PART" /mnt/home
-    fi
+    mkdir -p /mnt/{home,boot}
+    mount -o "${MOUNT_OPTS},subvol=@home" "$ROOT_PART" /mnt/home
     mount "$EFI_PART" /mnt/boot
-    ok "Mount done"
+    ok "Mount done (root @ + home @home on BTRFS; Timeshift stores snapshots on this same disk)"
 }
 
 # ════════════════════════════════════════════════════════════
@@ -330,7 +319,7 @@ install_base() {
     # otherwise when the condition is false the substitution exits 1,
     # and under set -e the assignment would abort (classic trap)
     PACKAGES="base base-devel linux linux-firmware linux-lts \
-btrfs-progs grub efibootmgr os-prober ntfs-3g \
+btrfs-progs grub efibootmgr os-prober ntfs-3g timeshift grub-btrfs \
 networkmanager sudo vim git \
 $( [ "${DESKTOP}" = "kde" ] && echo "plasma-meta sddm konsole dolphin ark gwenview \
 fcitx5-im fcitx5-chinese-addons fcitx5-configtool \
@@ -423,6 +412,49 @@ printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/
         hyprland) arch-chroot /mnt systemctl enable sddm >/dev/null 2>&1 ;;
         headless) arch-chroot /mnt systemctl enable sshd >/dev/null 2>&1 ;;
     esac
+
+    # Timeshift BTRFS mode: root is the @ subvolume, snapshots live on the same disk.
+    # /home (@home) is excluded from snapshots by default to protect user data.
+    ROOT_UUID=$(blkid -s UUID -o value "$ROOT_PART" 2>/dev/null || true)
+    mkdir -p /mnt/etc/timeshift
+    cat > /mnt/etc/timeshift/timeshift.json <<EOF
+{
+  "backup_device_uuid" : "$ROOT_UUID",
+  "backup_device" : "$ROOT_PART",
+  "btrfs_mode" : "true",
+  "snapshot_type" : "BTRFS",
+  "scheduled" : "true",
+  "schedule_monthly" : "0",
+  "schedule_weekly" : "2",
+  "schedule_daily" : "1",
+  "schedule_boot" : "0",
+  "schedule_hourly" : "0",
+  "count_monthly" : "0",
+  "count_weekly" : "3",
+  "count_daily" : "5",
+  "count_boot" : "0",
+  "count_hourly" : "0",
+  "snapshot_size" : "0",
+  "exclude" : [
+    "- /var/log/**",
+    "- /var/cache/pacman/pkg/**",
+    "- /var/tmp/**"
+  ],
+  "exclude_home" : "true",
+  "workspace" : "/var/tmp/timeshift",
+  "date_format" : "%Y-%m-%d_%H-%M-%S",
+  "prefix" : "",
+  "stop_cron" : "false",
+  "restart_cron" : "true",
+  "nice" : "19",
+  "ionice" : "3",
+  "run_ionice" : "true"
+}
+EOF
+    arch-chroot /mnt systemctl enable timeshift.timer >/dev/null 2>&1
+    arch-chroot /mnt systemctl enable grub-btrfsd.service >/dev/null 2>&1 || true
+    echo 'GRUB_BTRFS_Timeshift=true' >> /mnt/etc/default/grub-btrfs 2>/dev/null || true
+    ok "Timeshift (BTRFS mode) configured + scheduled; grub-btrfs enabled"
     ok "Services enabled"
 }
 
@@ -447,7 +479,7 @@ main() {
     }
     echo "  EFI  : $(fmt_t "$PART_EFI_DEV" "$PART_EFI_TGT")  $([ "$PART_EFI_FMT" = "1" ] && echo '[format]' || echo '[keep, mount only]')"
     echo "  /    : $(fmt_t "$PART_ROOT_DEV" "$PART_ROOT_TGT")"
-    echo "  /home: $([ "$HOME_IS_SUBVOL" = "1" ] && echo '(BTRFS subvolume @home of /)' || echo "$(fmt_t "$PART_HOME_DEV" "$PART_HOME_TGT")")"
+    echo "  /home: BTRFS subvolume @home (same disk as /; Timeshift excludes it by default)"
     echo "  swap : $(fmt_t "$PART_SWAP_DEV" "$PART_SWAP_TGT")"
     echo "  Boot : ${BOOT_MODE}   Desktop: ${DESKTOP}   Hostname: ${HOSTNAME}   User: ${USER_NAME}"
     echo "  Windows: $([ "${KEEP_WINDOWS}" = "1" ] && echo keep dual-boot || echo none)   Mirror: $([ "${AUTO_MIRROR}" = "1" ] && echo auto-benchmark || echo manual)"
@@ -467,7 +499,9 @@ main() {
     echo "  1. Run 'exit' / 'reboot' (remember to remove the install media)"
     echo "  2. In GRUB: default is the linux kernel; fall back via 'Advanced options' -> linux-lts"
     echo "  3. After login, first thing: sudo pacman -Syu to update"
-    echo "  4. Want a snappier desktop? sudo bash -c \"\$(curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/seika-kernel.sh)\""
+    echo "  4. Snapshots: Timeshift is preconfigured (BTRFS mode, daily+weekly). Make a restore point:"
+    echo "     sudo timeshift --create --comments 'first-boot'"
+    echo "  5. Want a snappier desktop? sudo bash -c \"\$(curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/seika-kernel.sh)\""
     echo "══════════════════════════════════════════════"
 }
 
