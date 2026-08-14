@@ -62,10 +62,14 @@ preflight() {
     #    Wrapped in a subshell so a network failure only warns, not fatal.
     ( bench_mirror ) 2>/dev/null || true
 
-    # 2) Locale: archiso is already UTF-8; ensure zh_CN is available.
+    # 2) Locale: the INSTALLER runs in a plain English locale so that the
+    #    underlying tools (mkswap, mkfs.btrfs, btrfs, ...) print readable
+    #    English errors. The TARGET system stays Chinese - that is configured
+    #    separately inside arch-chroot (configure_system: /mnt/etc/locale.conf).
+    #    We still generate zh_CN on the host so the chroot locale-gen can use it.
     sed -i 's/^#zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen 2>/dev/null || true
     locale-gen >/dev/null 2>&1 || true
-    export LANG=zh_CN.UTF-8 LC_ALL=zh_CN.UTF-8
+    export LANG=C.UTF-8 LC_ALL=C.UTF-8
 
     # 3) Local console Chinese note (important, avoids wasted effort)
     #    stock archiso cannot show Chinese on the local console:
