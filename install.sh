@@ -184,7 +184,7 @@ ask_questions() {
 }
 
 # ════════════════════════════════════════════════════════════
-# 4. Partition selection (guided: one-click auto / manual per mountpoint)
+# 4. Partition selection (manual, guided per mountpoint)
 #    Mountpoints: EFI, / (root), /home (OPTIONAL), swap.
 #    Each step pick disk first, then pick [existing partition | free space].
 #    /home is OPTIONAL (this is the closed loop):
@@ -272,20 +272,9 @@ manual_partition() {
     pick_disk; PART_SWAP_DEV="$_DISK"; pick_target "$_DISK" SWAP; PART_SWAP_TGT="$_TGT"
 }
 
-oneclick_partition() {
-    local ram; ram=$(free -g 2>/dev/null | awk '/^Mem:/{print $2}'); [ -z "$ram" ] && ram=4; [ "$ram" -lt 2 ] && ram=2
-    say "One-click mode: pick a disk, auto split EFI(1G)+/(rest, BTRFS @; /home stays inside /)+swap(${ram}G) from free space"
-    pick_disk
-    PART_EFI_DEV="$_DISK"; PART_EFI_TGT="free:+1G"; PART_EFI_FMT=1
-    PART_ROOT_DEV="$_DISK"; PART_ROOT_TGT="free:0"
-    PART_SWAP_DEV="$_DISK"; PART_SWAP_TGT="free:+${ram}G"
-}
-
-choose_disk() {
-    echo
-    say "Partition plan: 1) one-click (pick a disk, auto split)   2) manual (per mountpoint, recommended)"
-    read -rp "  Choose [1/2, default 2]: " m
-    [ "${m:-2}" = "1" ] && oneclick_partition || manual_partition
+# Entry point for partitioning: manual mode only (auto/one-click removed - untested).
+choose_partition() {
+    manual_partition
 }
 
 # ════════════════════════════════════════════════════════════
@@ -539,7 +528,7 @@ main() {
     detect_hardware
     suggest_plan
     ask_questions
-    choose_disk
+    choose_partition
     echo
     say "────────── Partition plan review ──────────"
     fmt_t() {
