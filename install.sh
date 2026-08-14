@@ -448,8 +448,8 @@ main() {
     echo "  Windows: $([ "${KEEP_WINDOWS}" = "1" ] && echo keep dual-boot || echo none)   Mirror: $([ "${AUTO_MIRROR}" = "1" ] && echo auto-benchmark || echo manual)"
     echo "─────────────────────────────────"
     echo "  WARNING: the above will ERASE data on the selected partitions/disks, and is NOT reversible!"
-    read -rp "  Type the word YES (uppercase) to confirm and start partitioning: " ans
-    [ "$ans" = "YES" ] || { say "Cancelled, no changes made"; exit 0; }
+    read -rp "  Type 'yes' to confirm and start partitioning (case-insensitive): " ans
+    [[ "${ans,,}" == "yes" ]] || { say "Cancelled, no changes made"; exit 0; }
 
     [ "${AUTO_MIRROR}" = "1" ] && bench_mirror
     setup_disk
