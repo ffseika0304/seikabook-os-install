@@ -434,6 +434,20 @@ printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/
     if [ "${BOOT_MODE}" = "UEFI" ]; then
         # make sure the EFI partition is actually mounted where GRUB expects it
         mountpoint -q /mnt/boot || mount "${EFI_PART}" /mnt/boot 2>/dev/null || true
+        # keep-existing EFI: clear stale Seikabook/Arch boot artifacts so a re-run
+        # or a small ESP does not fill up (grub-install: "No space left on device").
+        # Windows files (EFI/Microsoft, EFI/Boot, System Volume Information) are untouched.
+        if [ "${PART_EFI_FMT}" != "1" ]; then
+            rm -rf /mnt/boot/grub /mnt/boot/EFI/GRUB /mnt/boot/EFI/arch /mnt/boot/EFI/Linux
+            for k in /mnt/boot/vmlinuz-* /mnt/boot/initramfs-*.img; do
+                [ -e "$k" ] || continue
+                v=$(basename "$k" | sed -E 's/^(vmlinuz|initramfs)-//; s/\.img$//')
+                [ -d "/mnt/usr/lib/modules/$v" ] && continue
+                rm -f "$k"
+            done
+            FREE=$(df -m /mnt/boot 2>/dev/null | awk 'NR==2{print $4}')
+            [ -n "${FREE}" ] && [ "${FREE}" -lt 60 ] && warn "EFI partition only ${FREE}M free; dual-boot + several kernels may not fit, consider a larger ESP"
+        fi
         # efivarfs must be mounted so grub-install can register the boot entry
         [ -d /sys/firmware/efi ] && { [ -d /sys/firmware/efi/efivars ] || \
             mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null || true; }
