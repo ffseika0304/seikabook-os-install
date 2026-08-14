@@ -173,8 +173,8 @@ ask_questions() {
             *) echo "  Pick 1-4" ;;
         esac
     done
-    read -rp "  Keep Windows dual-boot? [y/N] " ans
-    [[ "${ans,,}" == "y" ]] && KEEP_WINDOWS=1 || KEEP_WINDOWS=0
+    read -rp "  Keep Windows dual-boot? [Y/n] " ans
+    [[ "${ans,,}" == "n" ]] && KEEP_WINDOWS=0 || KEEP_WINDOWS=1
     read -rp "  Auto-pick fastest China mirror? [Y/n] " ans
     [[ "${ans,,}" == "n" ]] && AUTO_MIRROR=0 || AUTO_MIRROR=1
     read -rp "  Hostname? [default arch] " ans
@@ -198,7 +198,9 @@ PART_HOME_DEV= PART_HOME_TGT= PART_HOME_FMT=0
 PART_SWAP_DEV= PART_SWAP_TGT=
 
 pick_disk() {
-    local disks=($(lsblk -d -rno NAME)); local i=1
+    # exclude the live-media loop device (archiso airootfs) - never a valid install target
+    local disks=($(lsblk -d -rno NAME 2>/dev/null | grep -v '^loop')); local i=1
+    [ "${#disks[@]}" -gt 0 ] || die "No installable disks found"
     echo "  Available disks:"
     for d in "${disks[@]}"; do
         local sz tr
@@ -207,7 +209,9 @@ pick_disk() {
         echo "    $i) /dev/$d  ${sz}  (${tr:-unknown})"; i=$((i+1))
     done
     while :; do
-        read -rp "  Pick disk number: " n
+        # default = 1 (first real disk); Enter just takes it
+        read -rp "  Pick disk number (default 1): " n
+        [ -z "$n" ] && n=1
         if [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le "${#disks[@]}" ]; then
             _DISK="/dev/${disks[$((n-1))]}"; return 0
         fi
@@ -225,7 +229,10 @@ pick_target() {
         echo "    $i) /dev/$p  ($(lsblk -dn -o SIZE "/dev/$p"))"; i=$((i+1))
     done
     while :; do
-        read -rp "  Pick number (0=free space): " n
+        # default = 0 (free space): the common beginner case is "use the free space
+        # Windows left", so Enter just does the expected thing.
+        read -rp "  Pick number (0=free space, default 0): " n
+        [ -z "$n" ] && n=0
         if [ "$n" = "0" ]; then
             local size
             read -rp "    Free space size (e.g. 100G / 512M, empty = all remaining): " size
