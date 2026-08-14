@@ -325,7 +325,7 @@ setup_disk() {
 
     MOUNT_OPTS="noatime,compress=zstd:1"
     mount -o "${MOUNT_OPTS},subvol=@" "$ROOT_PART" /mnt
-    mkdir -p /mnt/boot
+    mkdir -p /mnt/boot /mnt/home
     # /home: snapshots must protect the SYSTEM (/), never user data.
     #  - selected  -> a separate ext4 partition (naturally outside BTRFS, never snapshotted)
     #  - not picked -> the @home subvolume on the same BTRFS; Timeshift exclude_home=true
