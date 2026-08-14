@@ -125,7 +125,7 @@ detect_hardware() {
     esac
     echo "Memory : $(free -h | awk '/^Mem:/{print $2}')"
     echo "Disks  :"
-    lsblk -d -o NAME,SIZE,MODEL 2>/dev/null | grep -vE 'NAME|loop' | head -6 || true
+    lsblk -d -o NAME,SIZE,MODEL,TRAN 2>/dev/null | grep -vE 'NAME|loop' | head -6 || true
     if [ -d /sys/firmware/efi ]; then BOOT_MODE="UEFI"; else BOOT_MODE="BIOS"; fi
     echo "Boot   : ${BOOT_MODE}"
     echo "────────── Detection done ──────────"
@@ -194,7 +194,12 @@ HOME_IS_SUBVOL=0
 pick_disk() {
     local disks=($(lsblk -d -rno NAME)); local i=1
     echo "  Available disks:"
-    for d in "${disks[@]}"; do echo "    $i) /dev/$d"; i=$((i+1)); done
+    for d in "${disks[@]}"; do
+        local sz tr
+        sz=$(lsblk -d -rno SIZE "/dev/$d" 2>/dev/null)
+        tr=$(lsblk -d -rno TRAN "/dev/$d" 2>/dev/null)
+        echo "    $i) /dev/$d  ${sz}  (${tr:-unknown})"; i=$((i+1))
+    done
     while :; do
         read -rp "  Pick disk number: " n
         if [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le "${#disks[@]}" ]; then
