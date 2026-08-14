@@ -379,7 +379,7 @@ setup_disk() {
 
     MOUNT_OPTS="noatime,compress=zstd:1"
     mount -o "${MOUNT_OPTS},subvol=@" "$ROOT_PART" /mnt
-    mkdir -p /mnt/boot /mnt/home
+    mkdir -p /mnt/boot /mnt/boot/efi /mnt/home
     # /home: snapshots must protect the SYSTEM (/), never user data.
     #  - selected  -> a separate ext4 partition (naturally outside BTRFS, never snapshotted)
     #  - not picked -> the @home subvolume on the same BTRFS; Timeshift exclude_home=true
@@ -399,7 +399,7 @@ setup_disk() {
     # swap is created LAST so "all remaining" really means "whatever is left after / and /home"
     SWAP_PART=$(make_part "$PART_SWAP_DEV" "$PART_SWAP_TGT" 8200)
     mkswap "$SWAP_PART" >/dev/null && swapon "$SWAP_PART" && ok "swap $SWAP_PART"
-    mount "$EFI_PART" /mnt/boot
+    mount "$EFI_PART" /mnt/boot/efi
     ok "Mount done (root @ snapshotted by Timeshift; user data /home never snapshotted)"
 }
 
@@ -489,29 +489,40 @@ printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/
     # bootloader
     GRUB_OK=1
     if [ "${BOOT_MODE}" = "UEFI" ]; then
-        # make sure the EFI partition is actually mounted where GRUB expects it
-        mountpoint -q /mnt/boot || mount "${EFI_PART}" /mnt/boot 2>/dev/null || true
-        # keep-existing EFI: clear stale Seikabook/Arch boot artifacts so a re-run
-        # or a small ESP does not fill up (grub-install: "No space left on device").
-        # Windows files (EFI/Microsoft, EFI/Boot, System Volume Information) are untouched.
+        # Modern layout: the ESP is mounted at /boot/efi; the KERNELS live on the BTRFS
+        # root (/boot), NOT on the ESP. So even a tiny 200M ESP is plenty - GRUB only puts
+        # grubx64.efi + its modules there. This avoids the old failure where two ~120M
+        # initramfs files did not fit on a 200M ESP (and a buggy cleanup loop then deleted
+        # the live kernels, leaving GRUB with a Windows-only menu).
+        mkdir -p /mnt/boot/efi
+        mountpoint -q /mnt/boot/efi || mount "${EFI_PART}" /mnt/boot/efi 2>/dev/null || true
+        # keep-existing ESP: clear stale Seikabook/Arch GRUB artifacts so a re-run does not
+        # accumulate. Windows files (EFI/Microsoft, EFI/Boot, System Volume Information) are
+        # NEVER touched. Kernels are not on the ESP in this layout, so nothing to delete here.
         if [ "${PART_EFI_FMT}" != "1" ]; then
-            rm -rf /mnt/boot/grub /mnt/boot/EFI/GRUB /mnt/boot/EFI/arch /mnt/boot/EFI/Linux
-            for k in /mnt/boot/vmlinuz-* /mnt/boot/initramfs-*.img; do
-                [ -e "$k" ] || continue
-                v=$(basename "$k" | sed -E 's/^(vmlinuz|initramfs)-//; s/\.img$//')
-                [ -d "/mnt/usr/lib/modules/$v" ] && continue
-                rm -f "$k"
-            done
-            FREE=$(df -m /mnt/boot 2>/dev/null | awk 'NR==2{print $4}')
-            [ -n "${FREE}" ] && [ "${FREE}" -lt 60 ] && warn "EFI partition only ${FREE}M free; dual-boot + several kernels may not fit, consider a larger ESP"
+            rm -rf /mnt/boot/efi/grub /mnt/boot/efi/EFI/GRUB /mnt/boot/efi/EFI/arch /mnt/boot/efi/EFI/Linux
+            FREE=$(df -m /mnt/boot/efi 2>/dev/null | awk 'NR==2{print $4}')
+            [ -n "${FREE}" ] && [ "${FREE}" -lt 30 ] && warn "EFI partition only ${FREE}M free; GRUB files may not fit, consider a larger ESP"
         fi
         # efivarfs must be mounted so grub-install can register the boot entry
         [ -d /sys/firmware/efi ] && { [ -d /sys/firmware/efi/efivars ] || \
             mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null || true; }
         rm -f /tmp/grub.err
         if arch-chroot /mnt grub-install --target=x86_64-efi \
-            --efi-directory=/boot --bootloader-id=GRUB 2>/tmp/grub.err; then
+            --efi-directory=/boot/efi --bootloader-id=GRUB 2>/tmp/grub.err; then
             ok "GRUB UEFI installed"
+            # Make GRUB the FIRST NVRAM boot entry, otherwise the firmware may default to
+            # Windows Boot Manager and the user never sees the GRUB menu.
+            local gnum; gnum=$(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]*\)\* GRUB.*/\1/p' | head -1)
+            if [ -n "$gnum" ]; then
+                local cur; cur=$(efibootmgr 2>/dev/null | sed -n 's/^BootOrder: //p')
+                local new="$gnum"
+                for x in $(echo "$cur" | tr ',' ' '); do
+                    [ "$x" = "$gnum" ] || new="$new,$x"
+                done
+                efibootmgr -o "$new" >/dev/null 2>&1 || true
+                ok "GRUB set as the first NVRAM boot entry"
+            fi
         else
             echo "  ----- grub-install error -----"; sed 's/^/  /' /tmp/grub.err; echo "  --------------------------------"
             GRUB_OK=0
@@ -529,6 +540,8 @@ printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/
     if [ "${KEEP_WINDOWS}" = "1" ]; then
         echo 'GRUB_DISABLE_OS_PROBER=false' >> /mnt/etc/default/grub
     fi
+    # btrfs root subvolume: tells 10_linux + grub-btrfs the system lives in @
+    echo 'GRUB_BTRFS_ROOT_SUBVOLUME="@"' >> /mnt/etc/default/grub
     if [ "${GRUB_OK}" = "1" ]; then
         arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -3
     fi
@@ -677,11 +690,11 @@ main() {
         warn "GRUB bootloader was NOT installed (see error above). The system is fully installed but will NOT boot until you fix it."
         echo "  From the live ISO, chroot and install GRUB manually:"
         echo "    mount -o subvol=@ ${ROOT_PART} /mnt"
-        echo "    mount ${EFI_PART} /mnt/boot"
+        echo "    mount ${EFI_PART} /mnt/boot/efi"
         echo "    [ -d /sys/firmware/efi/efivars ] || mount -t efivarfs efivarfs /sys/firmware/efi/efivars"
         echo "    arch-chroot /mnt"
         if [ "${BOOT_MODE}" = "UEFI" ]; then
-            echo "    grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB"
+            echo "    grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB"
         else
             echo "    grub-install --target=i386-pc ${PART_ROOT_DEV}"
         fi
