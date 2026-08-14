@@ -63,30 +63,18 @@ preflight() {
     locale-gen >/dev/null 2>&1 || true
     export LANG=zh_CN.UTF-8 LC_ALL=zh_CN.UTF-8
 
-    # 3) fbterm 帧缓冲终端 + 中文字体（fbterm 用 freetype 渲染，可突破原生控制台 256/512 字形槽限制）
-    #    注意：fbterm 配 TTC(如 wqy-zenhei) 常加载失败静默回退→方框；用 PCF 位图字体 wqy-bitmapfont 最稳
-    pacman -Sy --noconfirm --needed fbterm wqy-bitmapfont wqy-zenhei noto-fonts-cjk >/dev/null 2>&1 || true
-
-    # 4) 物理 tty（非 SSH）切 fbterm 渲染中文；SSH 下跳过（客户端本就正常）
-    #    关键：必须 LANG=zh_CN.UTF-8，否则 fbterm 不按宽字符渲染 → 仍方框
+    # 3) 物理控制台中文说明（重要，避免无谓折腾）
+    #    stock archiso 已无法在本地控制台显示中文：
+    #      - fbterm 已从 Arch 官方源移除（pacman 报 target not found），无现成帧缓冲终端；
+    #      - setfont 受内核控制台 256/512 字形槽限制，CJK 上万个字装不下 → 必方框；
+    #      - 官方 archinstall 在本机物理控制台中文同样方块，印证是环境限制。
+    #    唯一可靠做法：用 SSH 终端运行本脚本（SSH 客户端本就正常显示中文）。
+    #    装系统流程本身不受影响，仅交互界面中文观感问题。
     if [ -z "${SSH_TTY:-}" ] && [ -t 1 ]; then
-        if command -v fbterm >/dev/null 2>&1; then
-            FONT=""
-            for f in "WenQuanYi Bitmap Song" "WenQuanYi Zen Hei" "Noto Sans CJK SC" "Noto Sans CJK JP" "Source Han Sans SC"; do
-                m=$(fc-match "$f" 2>/dev/null)
-                case "$m" in *wqy*|*Bitmap*|*CJK*|*Han*) FONT="$f"; break ;; esac
-            done
-            if [ -n "${FONT}" ]; then
-                printf 'font=%s\nfont-size=16\n' "$FONT" > ~/.fbtermrc
-                ok "已选中文终端字体: ${FONT}"
-            fi
-            kbd_mode -u 2>/dev/null || true
-            ok "已切换到 fbterm 中文终端，本地显示器可显示中文"
-            exec fbterm -- bash "$0" "$@"
-        else
-            warn "未能安装 fbterm，本地控制台中文可能乱码。"
-            warn "建议改用 SSH 连接 archiso 后再运行本脚本（SSH 客户端可正常显示中文）。"
-        fi
+        warn "检测到你在物理控制台(本地 tty)运行：stock archiso 本地控制台无法显示中文"
+        warn "(fbterm 已从官方源移除、setfont 字形槽限制也渲染不了 CJK；官方 archinstall 同样如此)。"
+        warn "建议改用 SSH 连接 archiso 后再运行本脚本，SSH 客户端可正常显示中文。"
+        warn "装系统流程不受影响，按提示(可凭英文/拼音关键词)操作即可。"
     fi
 }
 if [ -z "${SEIKA_PREFLIGHT:-}" ]; then
