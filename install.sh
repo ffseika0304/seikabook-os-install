@@ -291,14 +291,21 @@ setup_disk() {
         local dev="$1" tgt="$2" type="$3"
         if [[ "$tgt" == free:* ]]; then
             local size="${tgt#free:}"
+            # Determine the partition NUMBER sgdisk will assign next. sgdisk -n0 uses the
+            # LOWEST free number, so we read the on-disk table (sgdisk -p), NOT the kernel
+            # cache - this is reliable even immediately after a previous create in the same run.
+            # (Using lsblk|tail -1 was racy: the kernel/udev node can lag, so it returned an
+            # already-existing partition and every free: target collapsed onto the same device.)
+            local newn
+            newn=$(sgdisk -p "${dev}" 2>/dev/null | awk '
+                /^[ \t]*[0-9]+[ \t]/ { n=$1; used[n]=1; if (n>m) m=n }
+                END { i=1; while (i<=m+1) { if (!(i in used)) { print i; exit } i++ } }')
+            [ -n "$newn" ] || { echo "ERROR: cannot determine next partition number on ${dev}" >&2; return 1; }
             # Carve from the LARGEST free region's START sector (sgdisk -F prints just the start).
             # We create free: partitions sequentially (/ then /home then swap=rest), each time
             # re-reading the largest free region, so "swap = all remaining" must be created LAST.
             local fs; fs=$(sgdisk -F "${dev}" 2>/dev/null | head -1)
-            if [ -z "$fs" ]; then
-                echo "ERROR: no free space left on ${dev} to create a partition" >&2
-                return 1
-            fi
+            [ -n "$fs" ] || { echo "ERROR: no free space left on ${dev} to create a partition" >&2; return 1; }
             if [ -z "$size" ] || [ "$size" = "0" ]; then
                 sgdisk -n0:"${fs}":0 -t0:"${type}" "${dev}" >/dev/null \
                     || { echo "ERROR: failed to create partition in free space on ${dev}" >&2; return 1; }
@@ -306,12 +313,49 @@ setup_disk() {
                 sgdisk -n0:"${fs}":"${size}" -t0:"${type}" "${dev}" >/dev/null \
                     || { echo "ERROR: failed to create ${size} partition in free space on ${dev}" >&2; return 1; }
             fi
-            partprobe "${dev}"
-            local new; new=$(lsblk -rn -o NAME "${dev}" | tail -1)
-            echo "/dev/${new}"
+            partprobe "${dev}" 2>/dev/null || true
+            # Build the device path from the partition number we computed, and wait for the
+            # kernel device node to appear (udev can lag behind partprobe).
+            local newdev
+            case "$dev" in
+                *nvme*|*loop*|*mmcblk*) newdev="${dev}p${newn}" ;;
+                *) newdev="${dev}${newn}" ;;
+            esac
+            local i=0
+            while [ ! -b "$newdev" ] && [ $i -lt 25 ]; do sleep 0.2; i=$((i+1)); done
+            if [ ! -b "$newdev" ]; then
+                # Fallback: take the highest partition lsblk currently sees.
+                newdev="/dev/$(lsblk -rn -o NAME "${dev}" | tail -1)"
+            fi
+            [ -b "$newdev" ] || { echo "ERROR: partition ${newdev} not found after creation" >&2; return 1; }
+            echo "$newdev"
         else
             echo "${tgt#part:}"
         fi
+    }
+    # Sanity-check the real layout right after partitioning, so a device-capture
+    # mistake (root/home/swap pointing at the wrong partition) is caught BEFORE
+    # we pacstrap onto a broken disk.
+    verify_layout() {
+        echo
+        say "Actual partition layout (verify it matches your plan):"
+        for d in "$ROOT_PART" "$EFI_PART"; do
+            local dsk; dsk=$(lsblk -no PKNAME "$d" 2>/dev/null | head -1)
+            [ -n "$dsk" ] && lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINTS "/dev/${dsk}" 2>/dev/null | sed 's/^/  /' || true
+        done
+        local bad=0
+        local rfs; rfs=$(lsblk -no FSTYPE "$ROOT_PART" 2>/dev/null)
+        [ "$rfs" = "btrfs" ] || { warn "ROOT $ROOT_PART is NOT btrfs (detected: '${rfs:-none}')"; bad=1; }
+        if [ -n "$PART_HOME_DEV" ]; then
+            local hfs; hfs=$(lsblk -no FSTYPE "$HOME_PART" 2>/dev/null)
+            [ "$hfs" = "ext4" ] || { warn "/home $HOME_PART is NOT ext4 (detected: '${hfs:-none}')"; bad=1; }
+        fi
+        if [ -n "$PART_SWAP_DEV" ]; then
+            local sfs; sfs=$(lsblk -no FSTYPE "$SWAP_PART" 2>/dev/null)
+            [ "$sfs" = "swap" ] || { warn "swap $SWAP_PART is NOT swap (detected: '${sfs:-none}')"; bad=1; }
+        fi
+        [ "$bad" = "1" ] && { warn "Layout MISMATCH above - do NOT reboot. Re-run after cleaning the target."; return 1; }
+        ok "Layout verified: root=btrfs$([ -n "$PART_HOME_DEV" ] && echo ', /home=ext4'), swap present"
     }
     EFI_PART=$(make_part "$PART_EFI_DEV" "$PART_EFI_TGT" ef00)
     [ "$PART_EFI_FMT" = "1" ] && mkfs.fat -F32 "$EFI_PART" >/dev/null && ok "EFI $EFI_PART (FAT32)"
@@ -571,6 +615,7 @@ main() {
 
     [ "${AUTO_MIRROR}" = "1" ] && bench_mirror
     setup_disk
+    verify_layout || die "Partition layout invalid - aborted before installing the base system."
     install_base
     configure_system
 
