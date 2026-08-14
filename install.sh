@@ -123,7 +123,7 @@ detect_hardware() {
         *intel*) GPU_FAMILY="intel" ;;
         *) GPU_FAMILY="unknown" ;;
     esac
-    echo "Memory : $(free -h | awk '/^Mem:/{print $2}')"
+    echo "Memory : $(awk '/^MemTotal:/{printf "%.1f GiB\n", $2/1024/1024}' /proc/meminfo 2>/dev/null || echo unknown)"
     echo "Disks  :"
     lsblk -d -o NAME,SIZE,MODEL,TRAN 2>/dev/null | grep -vE 'NAME|loop' | head -6 || true
     if [ -d /sys/firmware/efi ]; then BOOT_MODE="UEFI"; else BOOT_MODE="BIOS"; fi
@@ -289,6 +289,10 @@ choose_disk() {
 # ════════════════════════════════════════════════════════════
 setup_disk() {
     say "Partitioning and mounting per your plan (writing to disk)..."
+    # If a previous (interrupted) run left mounts/swaps behind, tear them down first so
+    # we can safely reformat the target partitions. A fresh installer only mounts under /mnt.
+    swapoff -a 2>/dev/null || true
+    umount -R /mnt 2>/dev/null || true
     # $1=disk $2=tgt(part:/dev/xxx | free:+SIZE | free:0) $3=typecode -> prints partition device path
     make_part() {
         local dev="$1" tgt="$2" type="$3"
