@@ -63,21 +63,21 @@ preflight() {
     locale-gen >/dev/null 2>&1 || true
     export LANG=zh_CN.UTF-8 LC_ALL=zh_CN.UTF-8
 
-    # 3) fbterm 帧缓冲终端 + 中文字体（fbterm 用 freetype 真正渲染 TTF 中文，
-    #    可突破原生控制台 256/512 字形槽限制；setfont 在原生 tty 永远渲染不了 CJK）
-    pacman -Sy --noconfirm --needed fbterm wqy-zenhei noto-fonts-cjk >/dev/null 2>&1 || true
+    # 3) fbterm 帧缓冲终端 + 中文字体（fbterm 用 freetype 渲染，可突破原生控制台 256/512 字形槽限制）
+    #    注意：fbterm 配 TTC(如 wqy-zenhei) 常加载失败静默回退→方框；用 PCF 位图字体 wqy-bitmapfont 最稳
+    pacman -Sy --noconfirm --needed fbterm wqy-bitmapfont wqy-zenhei noto-fonts-cjk >/dev/null 2>&1 || true
 
     # 4) 物理 tty（非 SSH）切 fbterm 渲染中文；SSH 下跳过（客户端本就正常）
     #    关键：必须 LANG=zh_CN.UTF-8，否则 fbterm 不按宽字符渲染 → 仍方框
     if [ -z "${SSH_TTY:-}" ] && [ -t 1 ]; then
         if command -v fbterm >/dev/null 2>&1; then
             FONT=""
-            for f in "WenQuanYi Zen Hei" "Noto Sans CJK SC" "Noto Sans CJK JP" "Source Han Sans SC"; do
+            for f in "WenQuanYi Bitmap Song" "WenQuanYi Zen Hei" "Noto Sans CJK SC" "Noto Sans CJK JP" "Source Han Sans SC"; do
                 m=$(fc-match "$f" 2>/dev/null)
-                case "$m" in *wqy*|*CJK*|*Han*) FONT="$f"; break ;; esac
+                case "$m" in *wqy*|*Bitmap*|*CJK*|*Han*) FONT="$f"; break ;; esac
             done
             if [ -n "${FONT}" ]; then
-                printf 'font=%s\nfont-size=14\n' "$FONT" > ~/.fbtermrc
+                printf 'font=%s\nfont-size=16\n' "$FONT" > ~/.fbtermrc
                 ok "已选中文终端字体: ${FONT}"
             fi
             kbd_mode -u 2>/dev/null || true
