@@ -17,6 +17,19 @@ ok()   { echo -e "${C_GREEN}[ OK ]${C_RESET} $*"; }
 warn() { echo -e "${C_YEL}[注意]${C_RESET} $*"; }
 die()  { echo -e "${C_RED}[错误]${C_RESET} $*" >&2; exit 1; }
 
+# ────────────────────────────────────────────────────────────
+# 0.0 管道自愈：curl | bash 时 stdin 是管道，交互 read/select 会
+#     读到 EOF 自断。检测到非终端输入就重新以 /dev/tty 重跑自身。
+# ────────────────────────────────────────────────────────────
+SELF_URL="https://gitee.com/seikabook/seikabook-os-install/raw/master/install.sh"
+if [ ! -t 0 ] && [ -z "${SEIKA_REEXEC:-}" ]; then
+    say "检测到管道输入，重新以终端交互方式运行…"
+    curl -fsSL "$SELF_URL" -o /tmp/seika-install.sh \
+        || die "重新下载安装脚本失败，请改用两步法：curl -o /tmp/i.sh && bash /tmp/i.sh"
+    export SEIKA_REEXEC=1
+    exec bash /tmp/seika-install.sh < /dev/tty
+fi
+
 # ════════════════════════════════════════════════════════════
 # 0. 基础检查：必须 root、必须 archiso 环境
 # ════════════════════════════════════════════════════════════
@@ -111,61 +124,135 @@ ask_questions() {
 }
 
 # ════════════════════════════════════════════════════════════
-# 4. 选择目标磁盘（重点防呆：误清盘是唯一不可逆的事故）
+# 4. 分区选择（引导式：一键自动 / 手动逐个挂载点指定）
+#    挂载点：EFI、/、/home、swap；每步先选硬盘，再选〔现有分区│空闲空间〕
+#    空闲空间可指定容量(如 100G/512M)，留空=该盘全部剩余空间
 # ════════════════════════════════════════════════════════════
+PART_EFI_DEV= PART_EFI_TGT= PART_EFI_FMT=1
+PART_ROOT_DEV= PART_ROOT_TGT=
+PART_HOME_DEV= PART_HOME_TGT=
+PART_SWAP_DEV= PART_SWAP_TGT=
+HOME_IS_SUBVOL=0
+
+pick_disk() {
+    local disks=($(lsblk -d -rno NAME)); local i=1
+    echo "  可用磁盘:"
+    for d in "${disks[@]}"; do echo "    $i) /dev/$d"; i=$((i+1)); done
+    while :; do
+        read -rp "  选择磁盘编号: " n
+        if [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le "${#disks[@]}" ]; then
+            _DISK="/dev/${disks[$((n-1))]}"; return 0
+        fi
+        warn "无效编号"
+    done
+}
+
+pick_target() {
+    # $1=磁盘(dev)  $2=标签(如 EFI)
+    local dev="$1" label="$2"
+    echo "  [${label}] 在 ${dev} 上选择目标:"
+    echo "    0) 空闲空间（脚本新建分区）"
+    local plist=($(lsblk -rn -o NAME,PARTN "$dev" | awk '$2!="" {print $1}')); local i=1
+    for p in "${plist[@]}"; do
+        echo "    $i) /dev/$p  ($(lsblk -dn -o SIZE "/dev/$p"))"; i=$((i+1))
+    done
+    while :; do
+        read -rp "  选编号(0=空闲空间): " n
+        if [ "$n" = "0" ]; then
+            local size
+            read -rp "    空闲空间用量(如 100G / 512M，留空=全部剩余): " size
+            if [ -n "$size" ]; then
+                [[ "$size" =~ ^[0-9]+(M|G)$ ]] || { warn "容量格式应为 数字+G/M，如 100G"; continue; }
+                size="+${size}"
+            else
+                size=0
+            fi
+            _TGT="free:${size}"; return 0
+        elif [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le "${#plist[@]}" ]; then
+            _TGT="part:/dev/${plist[$((n-1))]}"; return 0
+        fi
+        warn "无效编号"
+    done
+}
+
+manual_partition() {
+    say "手动模式：逐个挂载点选择（先选硬盘，再选该盘上的分区或空闲空间）"
+    say "步骤 1/4 —— EFI 分区"
+    pick_disk; PART_EFI_DEV="$_DISK"; pick_target "$_DISK" EFI; PART_EFI_TGT="$_TGT"
+    if [[ "$PART_EFI_TGT" == part:* ]]; then
+        read -rp "  格式化该 EFI 分区? [y/N] " f
+        [[ "${f,,}" == "y" ]] && PART_EFI_FMT=1 || PART_EFI_FMT=0
+    fi
+    say "步骤 2/4 —— 根 / 分区"
+    pick_disk; PART_ROOT_DEV="$_DISK"; pick_target "$_DISK" ROOT; PART_ROOT_TGT="$_TGT"
+    say "步骤 3/4 —— /home 分区"
+    pick_disk; PART_HOME_DEV="$_DISK"; pick_target "$_DISK" HOME; PART_HOME_TGT="$_TGT"
+    say "步骤 4/4 —— swap 分区"
+    pick_disk; PART_SWAP_DEV="$_DISK"; pick_target "$_DISK" SWAP; PART_SWAP_TGT="$_TGT"
+}
+
+oneclick_partition() {
+    local ram; ram=$(free -g 2>/dev/null | awk '/^Mem:/{print $2}'); [ -z "$ram" ] && ram=4; [ "$ram" -lt 2 ] && ram=2
+    say "一键模式：选一块盘，自动从空闲空间划分 EFI(1G)+/(剩余)+/home(子卷)+swap(${ram}G)"
+    pick_disk
+    PART_EFI_DEV="$_DISK"; PART_EFI_TGT="free:+1G"; PART_EFI_FMT=1
+    PART_ROOT_DEV="$_DISK"; PART_ROOT_TGT="free:0"
+    PART_HOME_DEV="$_DISK"; PART_HOME_TGT="free:0"; HOME_IS_SUBVOL=1
+    PART_SWAP_DEV="$_DISK"; PART_SWAP_TGT="free:+${ram}G"
+}
+
 choose_disk() {
     echo
-    say "当前磁盘列表（⚠️ 选中后将完全清空该盘）："
-    lsblk -d -o NAME,SIZE,MODEL,TRAN | grep -E 'disk' || true
-    echo
-    read -rp "  输入要安装的磁盘设备名（如 sda，不含 /dev/）: " DISK
-    DEV="/dev/${DISK}"
-    [ -b "${DEV}" ] || die "设备 ${DEV} 不存在"
-    # 已有分区强确认
-    if lsblk "${DEV}" -o NAME 2>/dev/null | grep -q "${DISK}[0-9p]"; then
-        warn "⚠️ 该磁盘已有分区！安装将【清除所有数据】！"
-        warn "数据无价，确认前请三思。"
-        read -rp "  输入大写的 YES 确认清空 ${DEV} 并安装: " confirm
-        [ "${confirm}" = "YES" ] || die "已取消，未做任何更改"
-    fi
-    ok "目标磁盘: ${DEV}"
+    say "分区方案：1) 一键（选一块盘自动划分）   2) 手动（逐个挂载点指定，推荐）"
+    read -rp "  选择 [1/2，默认 2]: " m
+    [ "${m:-2}" = "1" ] && oneclick_partition || manual_partition
 }
 
 # ════════════════════════════════════════════════════════════
 # 5. 分区 + 格式化 + BTRFS 子卷
 # ════════════════════════════════════════════════════════════
 setup_disk() {
-    say "分区 ${DEV} ..."
-    sgdisk --zap-all "${DEV}" >/dev/null 2>&1 || true
-    if [ "${BOOT_MODE}" = "UEFI" ]; then
-        sgdisk -n1:0:+1G -t1:ef00 "${DEV}" >/dev/null
-        sgdisk -n2:0:0 -t2:8300 "${DEV}" >/dev/null
-        EFI_PART="${DEV}1"; ROOT_PART="${DEV}2"
-        mkfs.fat -F32 "${EFI_PART}" >/dev/null && ok "EFI 分区 ${EFI_PART} (FAT32)"
-    else
-        sgdisk -n1:0:+1M -t1:ef02 "${DEV}" >/dev/null
-        sgdisk -n2:0:0 -t2:8300 "${DEV}" >/dev/null
-        EFI_PART=""; ROOT_PART="${DEV}2"
-    fi
-    mkfs.btrfs -f "${ROOT_PART}" >/dev/null && ok "根分区 ${ROOT_PART} (BTRFS)"
+    say "按选定结构分区与挂载（将写入磁盘）..."
+    # $1=磁盘 $2=tgt(part:/dev/xxx | free:+SIZE | free:0) $3=typecode → 输出分区设备路径
+    make_part() {
+        local dev="$1" tgt="$2" type="$3"
+        if [[ "$tgt" == free:* ]]; then
+            local size="${tgt#free:}"
+            sgdisk -n0:0:"${size}" -t0:"${type}" "${dev}" >/dev/null
+            partprobe "${dev}"
+            local new; new=$(lsblk -rn -o NAME "${dev}" | tail -1)
+            echo "/dev/${new}"
+        else
+            echo "${tgt#part:}"
+        fi
+    }
+    EFI_PART=$(make_part "$PART_EFI_DEV" "$PART_EFI_TGT" ef00)
+    [ "$PART_EFI_FMT" = "1" ] && mkfs.fat -F32 "$EFI_PART" >/dev/null && ok "EFI $EFI_PART (FAT32)"
 
-    say "创建 BTRFS 子卷 @ / @home / @snapshots ..."
-    mount "${ROOT_PART}" /mnt
+    SWAP_PART=$(make_part "$PART_SWAP_DEV" "$PART_SWAP_TGT" 8200)
+    mkswap "$SWAP_PART" >/dev/null && swapon "$SWAP_PART" && ok "swap $SWAP_PART"
+
+    ROOT_PART=$(make_part "$PART_ROOT_DEV" "$PART_ROOT_TGT" 8300)
+    mkfs.btrfs -f "$ROOT_PART" >/dev/null && ok "根 $ROOT_PART (BTRFS)"
+    mount "$ROOT_PART" /mnt
     btrfs subvolume create /mnt/@ >/dev/null
-    btrfs subvolume create /mnt/@home >/dev/null
     btrfs subvolume create /mnt/@snapshots >/dev/null
+    [ "$HOME_IS_SUBVOL" = "1" ] && btrfs subvolume create /mnt/@home >/dev/null
     umount /mnt
 
-    say "挂载子卷..."
     MOUNT_OPTS="noatime,compress=zstd:1"
-    mount -o "${MOUNT_OPTS},subvol=@" "${ROOT_PART}" /mnt
+    mount -o "${MOUNT_OPTS},subvol=@" "$ROOT_PART" /mnt
     mkdir -p /mnt/{home,.snapshots,boot}
-    mount -o "${MOUNT_OPTS},subvol=@home" "${ROOT_PART}" /mnt/home
-    mount -o "${MOUNT_OPTS},subvol=@snapshots" "${ROOT_PART}" /mnt/.snapshots
-    if [ -n "${EFI_PART}" ]; then
-        mount "${EFI_PART}" /mnt/boot
+    mount -o "${MOUNT_OPTS},subvol=@snapshots" "$ROOT_PART" /mnt/.snapshots
+    if [ "$HOME_IS_SUBVOL" = "1" ]; then
+        mount -o "${MOUNT_OPTS},subvol=@home" "$ROOT_PART" /mnt/home
+    else
+        HOME_PART=$(make_part "$PART_HOME_DEV" "$PART_HOME_TGT" 8300)
+        mkfs.btrfs -f "$HOME_PART" >/dev/null && ok "/home $HOME_PART (BTRFS)"
+        mount -o "${MOUNT_OPTS}" "$HOME_PART" /mnt/home
     fi
-    ok "子卷挂载完成"
+    mount "$EFI_PART" /mnt/boot
+    ok "挂载完成"
 }
 
 # ════════════════════════════════════════════════════════════
@@ -271,7 +358,7 @@ printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/
             --efi-directory=/boot --bootloader-id=GRUB >/dev/null 2>&1 \
             && ok "GRUB UEFI 安装完成" || die "GRUB UEFI 安装失败，系统将无法引导"
     else
-        arch-chroot /mnt grub-install --target=i386-pc "${DEV}" >/dev/null 2>&1 \
+        arch-chroot /mnt grub-install --target=i386-pc "${PART_ROOT_DEV}" >/dev/null 2>&1 \
             && ok "GRUB BIOS 安装完成" || die "GRUB BIOS 安装失败，系统将无法引导"
     fi
     # 双系统
@@ -300,17 +387,26 @@ main() {
     ask_questions
     choose_disk
     echo
-    say "────────── 安装计划 ──────────"
-    echo "  磁盘     : ${DEV}（将被清空）"
-    echo "  引导     : ${BOOT_MODE}"
-    echo "  桌面     : ${DESKTOP}"
-    echo "  主机名   : ${HOSTNAME}"
-    echo "  用户     : ${USER_NAME}"
-    echo "  Windows  : $([ "${KEEP_WINDOWS}" = "1" ] && echo 保留双系统 || echo 不保留)"
-    echo "  镜像源   : $([ "${AUTO_MIRROR}" = "1" ] && echo 自动测速 || echo 手动配置)"
-    echo "─────────────────────────"
-    read -rp "  确认无误开始安装？[y/N] " ans
-    [[ "${ans,,}" == "y" ]] || { say "已取消"; exit 0; }
+    say "────────── 分区结构确认 ──────────"
+    fmt_t() {
+        local d="$1" t="$2"
+        if [[ "$t" == free:* ]]; then
+            local s="${t#free:}"; [ "$s" = "0" ] && s="全部剩余"
+            echo "$d 空闲空间(${s})"
+        else
+            echo "${t#part:}"
+        fi
+    }
+    echo "  EFI  : $(fmt_t "$PART_EFI_DEV" "$PART_EFI_TGT")  $([ "$PART_EFI_FMT" = "1" ] && echo '[格式化]' || echo '[保留,仅挂载]')"
+    echo "  /    : $(fmt_t "$PART_ROOT_DEV" "$PART_ROOT_TGT")"
+    echo "  /home: $([ "$HOME_IS_SUBVOL" = "1" ] && echo '（/ 的 BTRFS 子卷 @home）' || echo "$(fmt_t "$PART_HOME_DEV" "$PART_HOME_TGT")")"
+    echo "  swap : $(fmt_t "$PART_SWAP_DEV" "$PART_SWAP_TGT")"
+    echo "  引导 : ${BOOT_MODE}   桌面: ${DESKTOP}   主机名: ${HOSTNAME}   用户: ${USER_NAME}"
+    echo "  Windows: $([ "${KEEP_WINDOWS}" = "1" ] && echo 保留双系统 || echo 不保留)   镜像源: $([ "${AUTO_MIRROR}" = "1" ] && echo 自动测速 || echo 手动配置)"
+    echo "─────────────────────────────────"
+    echo "  ⚠️ 以上将【清空所选分区/磁盘上的数据】，且不可逆！"
+    read -rp "  输入大写的 YES 确认按此结构分区并格式化: " ans
+    [ "$ans" = "YES" ] || { say "已取消，未做任何更改"; exit 0; }
 
     [ "${AUTO_MIRROR}" = "1" ] && bench_mirror
     setup_disk
