@@ -135,7 +135,7 @@ curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/install.sh
 ## 项目地址
 
 - Gitee（主源）：https://gitee.com/seikabook/seikabook-os-install
-- GitHub（镜像）：同步中
+- GitHub（镜像）：https://github.com/ffseika0304/seikabook-os-install
 
 ---
 
