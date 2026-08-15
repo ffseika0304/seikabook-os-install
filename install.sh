@@ -509,20 +509,16 @@ install_base() {
         cp /etc/pacman.conf /mnt/etc/pacman.conf
     fi
 
+    # Phase 1: bootstrap ONLY the base + kernels + system tools. These live in [core]/
+    # [extra] and ALWAYS resolve, so this pacstrap is robust. The desktop, NVIDIA and
+    # 32-bit (multilib) packages are installed LATER INSIDE the chroot with a fully
+    # bootstrapped pacman (see configure_system phase 2) -- that avoids the fragile
+    # single-shot pacstrap "target not found" for [multilib] packages.
     PACKAGES="base base-devel linux-zen linux-zen-headers linux-lts linux-lts-headers linux-firmware \
 btrfs-progs grub efibootmgr os-prober ntfs-3g timeshift grub-btrfs \
-networkmanager cronie sudo vim git \
-$( [ "${DESKTOP}" = "kde" ] && echo "plasma-meta plasma-login-manager konsole dolphin ark gwenview \
-fcitx5-im fcitx5-chinese-addons fcitx5-configtool \
-noto-fonts noto-fonts-cjk noto-fonts-emoji wqy-microhei" || true ) \
-$( [ "${DESKTOP}" = "gnome" ] && echo "gnome gnome-extra gdm fcitx5-im fcitx5-chinese-addons \
-noto-fonts noto-fonts-cjk" || true ) \
-$( [ "${DESKTOP}" = "hyprland" ] && echo "hyprland sddm waybar rofi-wayland kitty \
-fcitx5-im fcitx5-chinese-addons noto-fonts noto-fonts-cjk" || true ) \
-$( [ "${DESKTOP}" = "headless" ] && echo "openssh cronie" || true ) \
-$( [ "${GPU_FAMILY}" = "nvidia" ] && [ "${NVIDIA_OPEN_OK}" = "1" ] && echo "nvidia-open-dkms nvidia-utils nvidia-settings$( [ \"${DESKTOP}\" != \"headless\" ] && echo \" lib32-nvidia-utils\" )" || true )"
+networkmanager cronie sudo vim git"
 
-    say "Installing base system + desktop (~10-15 min, depends on network)..."
+    say "Installing base system + kernels (~3-5 min)..."
     pacstrap -K /mnt ${PACKAGES} 2>&1 | tail -3
     genfstab -U /mnt >> /mnt/etc/fstab
     # Persist [multilib] in the installed system too (pacstrap does not copy the
@@ -542,6 +538,30 @@ configure_system() {
     # Write benchmark result into the new system (pacstrap does not copy host mirrorlist)
     if [ "${AUTO_MIRROR}" = "1" ] && [ -n "${BEST:-}" ]; then
         echo "Server = ${BEST}/\$repo/os/\$arch" > /mnt/etc/pacman.d/mirrorlist
+    fi
+
+    # Phase 2: install desktop + GPU + 32-bit packages INSIDE the chroot with a fully
+    # bootstrapped pacman. This is the robust, standard Arch way: the chroot pacman
+    # syncs its own databases (and [multilib] was already seeded into /mnt/etc/pacman.conf
+    # before pacstrap), so lib32-* resolves reliably -- sidestepping the single-shot
+    # pacstrap "target not found" fragility for [multilib] packages.
+    local extra_pkgs=""
+    [ "${DESKTOP}" = "kde" ]      && extra_pkgs+=" plasma-meta plasma-login-manager konsole dolphin ark gwenview fcitx5-im fcitx5-chinese-addons fcitx5-configtool noto-fonts noto-fonts-cjk noto-fonts-emoji wqy-microhei"
+    [ "${DESKTOP}" = "gnome" ]    && extra_pkgs+=" gnome gnome-extra gdm fcitx5-im fcitx5-chinese-addons noto-fonts noto-fonts-cjk"
+    [ "${DESKTOP}" = "hyprland" ] && extra_pkgs+=" hyprland sddm waybar rofi-wayland kitty fcitx5-im fcitx5-chinese-addons noto-fonts noto-fonts-cjk"
+    [ "${DESKTOP}" = "headless" ] && extra_pkgs+=" openssh"
+    if [ "${GPU_FAMILY}" = "nvidia" ] && [ "${NVIDIA_OPEN_OK}" = "1" ]; then
+        extra_pkgs+=" nvidia-open-dkms nvidia-utils nvidia-settings"
+        [ "${DESKTOP}" != "headless" ] && extra_pkgs+=" lib32-nvidia-utils"
+    fi
+    if [ -n "${extra_pkgs}" ]; then
+        say "Installing desktop + GPU drivers via pacman (chroot, phase 2)..."
+        if arch-chroot /mnt bash -c "pacman -Syu --noconfirm && pacman -S --noconfirm ${extra_pkgs}" >/tmp/phase2.log 2>&1; then
+            ok "Desktop + GPU packages installed (chroot phase 2)"
+        else
+            tail -15 /tmp/phase2.log
+            die "phase-2 package install failed (desktop/GPU) -- see output above"
+        fi
     fi
 
     arch-chroot /mnt bash -c "
