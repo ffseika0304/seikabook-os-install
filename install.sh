@@ -476,39 +476,13 @@ install_base() {
     # otherwise when the condition is false the substitution exits 1,
     # and under set -e the assignment would abort (classic trap)
 
-    # [multilib] must be enabled AND its database synced before pacstrap, or any
-    # lib32-* package (lib32-nvidia-utils for 32-bit NVIDIA/Steam/Wine) is
-    # "target not found". The Arch ISO may ship multilib commented out, OR already
-    # uncommented but with NO database downloaded -- either way pacstrap needs a
-    # synced [multilib]. So: uncomment only if still commented (idempotent), then
-    # ALWAYS sync the databases (pacstrap does NOT auto-sync). Gating the sync
-    # behind "was it already enabled" was a real bug: a pre-enabled ISO silently
-    # skipped the sync and lib32 targets stayed unfindable.
-    if [ "${DESKTOP}" != "headless" ]; then
-        # Uncomment [multilib] only if still commented (idempotent). The Arch ISO may
-        # ship it commented OR already uncommented.
-        if grep -q '^#[[:space:]]*\[multilib\]' /etc/pacman.conf; then
-            sed -i '/^#[[:space:]]*\[multilib\]/,/^#[[:space:]]*Include = \/etc\/pacman.d\/mirrorlist/ s/^#//' /etc/pacman.conf
-        fi
-        # Sync ALL databases. pacstrap copies the HOST pacman.conf and runs its own
-        # internal -Sy against the TARGET root, so the host MUST have [multilib] enabled
-        # AND its database downloaded -- otherwise lib32-* stays "target not found".
-        # Make failures LOUD (no /dev/null, no || true) and retry, so a flaky mirror or
-        # transient network blip cannot silently leave the db stale and break pacstrap.
-        local synced=0
-        for _i in 1 2 3; do
-            if pacman -Sy --noconfirm; then synced=1; break; fi
-            warn "pacman -Sy attempt ${_i} failed, retrying in 3s..."; sleep 3
-        done
-        if [ "${synced}" != "1" ]; then
-            die "pacman -Sy failed after 3 attempts -- check network/mirror, then re-run."
-        fi
-        # Seed the target root's pacman.conf with [multilib] too, so any post-pacstrap
-        # pacman call (and the installed system) sees 32-bit repos regardless of how
-        # pacstrap handles config. Safe/idempotent.
-        mkdir -p /mnt/etc
-        cp /etc/pacman.conf /mnt/etc/pacman.conf
-    fi
+    # [multilib] is intentionally NOT enabled by default. The only 32-bit packages we
+    # might want (lib32-nvidia-utils for Steam/Proton) are optional, and the Steam setup
+    # guide tells the user how to unlock [multilib] + install them after first boot.
+    # Keeping it off by default keeps the install simpler and avoids the old
+    # "target not found: lib32-nvidia-utils" sync-footgun. (archlinuxcn, by contrast, IS
+    # enabled by default -- see setup_archlinuxcn -- because paru needs it to avoid the
+    # "can't install paru without the repo" chicken-and-egg.)
 
     # Phase 1: bootstrap ONLY the base + kernels + system tools. These live in [core]/
     # [extra] and ALWAYS resolve, so this pacstrap is robust. The desktop, NVIDIA and
@@ -522,12 +496,38 @@ networkmanager cronie sudo vim git"
     say "Installing base system + kernels (~3-5 min)..."
     pacstrap -K /mnt ${PACKAGES} 2>&1 | tail -3
     genfstab -U /mnt >> /mnt/etc/fstab
-    # Persist [multilib] in the installed system too (pacstrap does not copy the
-    # host pacman.conf, so it would otherwise ship commented out again).
-    if ! grep -q '^\[multilib\]' /mnt/etc/pacman.conf 2>/dev/null; then
-        sed -i '/^#\[multilib\]/,/^#Include = \/etc\/pacman.d\/mirrorlist/ s/^#//' /mnt/etc/pacman.conf
-    fi
+    # [archlinuxcn] is enabled + paru installed later in configure_system(), not here.
     ok "Base system installed"
+}
+
+# Enable the archlinuxcn repo and install paru (AUR helper) into the target system.
+# WHY: paru lives in archlinuxcn, not [core]/[extra]. If we DON'T pre-enable the repo,
+# the user hits a chicken-and-egg trap on first boot: "I need an AUR helper" -> "install
+# paru" -> "paru is in archlinuxcn" -> "enable archlinuxcn first" (and paru is prebuilt
+# there, so it is just `pacman -S paru` once the repo is on). We break the loop by
+# enabling the repo and shipping paru preinstalled.
+# BOOTSTRAP: the archlinuxcn db/keyring are signed by a key a fresh pacman keyring does
+# NOT yet trust. We add the repo with SigLevel=Optional so the unknown-key signature only
+# WARNS (does not block) the keyring install; once archlinuxcn-keyring lands, the key is in
+# the keyring, and we lock the repo back to Required DatabaseOptional for proper checks.
+setup_archlinuxcn() {
+    say "Enabling archlinuxcn repo + installing paru (AUR helper)..."
+    if ! grep -q '^\[archlinuxcn\]' /mnt/etc/pacman.conf 2>/dev/null; then
+        cat >> /mnt/etc/pacman.conf <<'EOF'
+
+[archlinuxcn]
+SigLevel = Optional
+Server = https://mirrors.tuna.tsinghua.edu.cn/archlinuxcn/$arch
+EOF
+    fi
+    if arch-chroot /mnt bash -c "pacman -Sy --noconfirm && pacman -S --noconfirm archlinuxcn-keyring && pacman -S --noconfirm paru" >/tmp/archlinuxcn.log 2>&1; then
+        ok "archlinuxcn enabled + paru installed"
+    else
+        echo "  ----- archlinuxcn/paru install error -----"; sed 's/^/  /' /tmp/archlinuxcn.log; echo "  -------------------------------------"
+        warn "archlinuxcn/paru install failed -- enable it manually after first boot"
+    fi
+    # Lock the repo to proper signature checking now that its keyring is in place.
+    sed -i '/^\[archlinuxcn\]/,/^Server = / s/^SigLevel = Optional/SigLevel = Required DatabaseOptional/' /mnt/etc/pacman.conf
 }
 
 # Fallback that runs ONLY when grub-mkconfig could not produce /boot/grub/grub.cfg
@@ -633,9 +633,9 @@ configure_system() {
 
     # Phase 2: install desktop + GPU + 32-bit packages INSIDE the chroot with a fully
     # bootstrapped pacman. This is the robust, standard Arch way: the chroot pacman
-    # syncs its own databases (and [multilib] was already seeded into /mnt/etc/pacman.conf
-    # before pacstrap), so lib32-* resolves reliably -- sidestepping the single-shot
-    # pacstrap "target not found" fragility for [multilib] packages.
+    # Phase 2 runs inside the chroot with a fully bootstrapped pacman, so all [extra]
+    # packages (desktop, nvidia-dkms) resolve reliably. 32-bit (multilib) is opt-in and
+    # handled by the user post-boot, so it is intentionally absent here.
     local extra_pkgs=""
     [ "${DESKTOP}" = "kde" ]      && extra_pkgs+=" plasma-meta plasma-login-manager konsole dolphin ark gwenview fcitx5-im fcitx5-chinese-addons fcitx5-configtool noto-fonts noto-fonts-cjk noto-fonts-emoji wqy-microhei"
     [ "${DESKTOP}" = "gnome" ]    && extra_pkgs+=" gnome gnome-extra gdm fcitx5-im fcitx5-chinese-addons noto-fonts noto-fonts-cjk"
@@ -643,7 +643,11 @@ configure_system() {
     [ "${DESKTOP}" = "headless" ] && extra_pkgs+=" openssh"
     if [ "${GPU_FAMILY}" = "nvidia" ] && [ "${NVIDIA_DKMS_OK}" = "1" ]; then
         extra_pkgs+=" nvidia-dkms nvidia-utils nvidia-settings"
-        [ "${DESKTOP}" != "headless" ] && extra_pkgs+=" lib32-nvidia-utils"
+        # 32-bit GL (lib32-nvidia-utils, in [multilib]) is OPTIONAL -- only for
+        # Steam/Proton/Wine 32-bit games. Intentionally NOT installed by default: it
+        # would force-enable [multilib] and is unrelated to a working desktop. Gamers
+        # enable [multilib] + `pacman -S lib32-nvidia-utils` after first boot (the
+        # Steam setup guide covers this).
     fi
     if [ -n "${extra_pkgs}" ]; then
         say "Installing desktop + GPU drivers via pacman (chroot, phase 2)..."
@@ -654,6 +658,10 @@ configure_system() {
             die "phase-2 package install failed (desktop/GPU) -- see output above"
         fi
     fi
+
+    # archlinuxcn + paru (AUR helper) -- breaks the "can't install paru without the
+    # repo, can't enable the repo without paru" chicken-and-egg for new users.
+    setup_archlinuxcn
 
     arch-chroot /mnt bash -c "
 set -e
