@@ -475,14 +475,19 @@ install_base() {
     # otherwise when the condition is false the substitution exits 1,
     # and under set -e the assignment would abort (classic trap)
 
-    # Enable [multilib] BEFORE pacstrap: the Arch ISO ships it commented out,
-    # and any lib32-* package (lib32-nvidia-utils for 32-bit NVIDIA gaming,
-    # Steam/Wine, etc.) is unresolvable until it is on. Only needed for a
-    # desktop install where 32-bit libs make sense.
-    if [ "${DESKTOP}" != "headless" ] && ! grep -q '^\[multilib\]' /etc/pacman.conf; then
-        sed -i '/^#\[multilib\]/,/^#Include = \/etc\/pacman.d\/mirrorlist/ s/^#//' /etc/pacman.conf
-        pacman -Sy --noconfirm >/dev/null 2>&1 || true
+    # [multilib] must be enabled AND its database synced before pacstrap, or any
+    # lib32-* package (lib32-nvidia-utils for 32-bit NVIDIA/Steam/Wine) is
+    # "target not found". The Arch ISO may ship multilib commented out, OR already
+    # uncommented but with NO database downloaded -- either way pacstrap needs a
+    # synced [multilib]. So: uncomment only if still commented (idempotent), then
+    # ALWAYS sync the databases (pacstrap does NOT auto-sync). Gating the sync
+    # behind "was it already enabled" was a real bug: a pre-enabled ISO silently
+    # skipped the sync and lib32 targets stayed unfindable.
+    if [ "${DESKTOP}" != "headless" ] && grep -q '^#[[:space:]]*\[multilib\]' /etc/pacman.conf; then
+        sed -i '/^#[[:space:]]*\[multilib\]/,/^#[[:space:]]*Include = \/etc\/pacman.d\/mirrorlist/ s/^#//' /etc/pacman.conf
     fi
+    # Sync ALL databases before pacstrap (covers [multilib] and every repo). Safe/idempotent.
+    pacman -Sy --noconfirm >/dev/null 2>&1 || true
 
     PACKAGES="base base-devel linux-zen linux-zen-headers linux-lts linux-lts-headers linux-firmware \
 btrfs-progs grub efibootmgr os-prober ntfs-3g timeshift grub-btrfs \
