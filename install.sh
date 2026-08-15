@@ -515,7 +515,7 @@ install_base() {
     # bootstrapped pacman (see configure_system phase 2) -- that avoids the fragile
     # single-shot pacstrap "target not found" for [multilib] packages.
     PACKAGES="base base-devel linux-zen linux-zen-headers linux-lts linux-lts-headers linux-firmware \
-btrfs-progs grub efibootmgr os-prober ntfs-3g timeshift grub-btrfs \
+btrfs-progs grub efibootmgr os-prober ntfs-3g timeshift \
 networkmanager cronie sudo vim git"
 
     say "Installing base system + kernels (~3-5 min)..."
@@ -529,56 +529,34 @@ networkmanager cronie sudo vim git"
     ok "Base system installed"
 }
 
-# Build a self-contained GRUB for the cross-disk btrfs-root case.
-# grub-probe/grub-install/grub-mkconfig cannot map a root that lives on a DIFFERENT
-# physical disk than the ESP (a known grub limitation -> "cannot find a GRUB drive for
-# /dev/..."), so no grub.cfg gets produced. We bypass them: embed an early config that
-# locates the root FS by UUID, then write a static grub.cfg. Works for any UEFI
-# btrfs(@) install where grub.cfg is missing. Sets GRUB_OK=1 on success so the
-# end-of-run "bootloader not installed" warning does not fire.
+# Fallback that runs ONLY when grub-mkconfig could not produce /boot/grub/grub.cfg
+# (e.g. a cross-disk btrfs root that grub-probe cannot map). We do NOT replace the
+# standard grub-install flow -- we only write a static grub.cfg that locates the root by
+# FS UUID, with no dependency on grub-probe device mapping or fragile disk numbering.
+# Sets GRUB_OK=1 so the end-of-run "bootloader not installed" warning does not fire.
 build_cross_disk_grub() {
-    say "Cross-disk / unmappable btrfs root: building self-contained GRUB (grub-mkimage + static grub.cfg)"
-    local root_uuid efi_uuid efi_disk efi_partno mods k pkg defid
+    say "grub.cfg missing (cross-disk / unmappable btrfs root?): writing a static grub.cfg fallback"
+    local root_uuid efi_uuid efi_disk efi_partno k pkg
     root_uuid=$(blkid -s UUID -o value "${ROOT_PART}" 2>/dev/null)
     efi_uuid=$(blkid -s UUID -o value "${EFI_PART}" 2>/dev/null)
     efi_disk=$(lsblk -no PKNAME "${EFI_PART}" 2>/dev/null | head -1)
     efi_partno=$(lsblk -no PARTN "${EFI_PART}" 2>/dev/null | head -1)
-    [ -n "${root_uuid}" ] || { warn "could not read root FS UUID; skipping cross-disk GRUB"; return 1; }
+    [ -n "${root_uuid}" ] || { warn "could not read root FS UUID; skipping GRUB fallback"; return 1; }
 
-    # 1) make @ the default subvolume so GRUB and the kernel see it as the FS root
-    defid=$(arch-chroot /mnt btrfs subvolume list / 2>/dev/null | awk '$NF=="@"{print $2; exit}')
-    if [ -n "${defid}" ]; then
-        arch-chroot /mnt btrfs subvolume set-default "${defid}" / 2>/dev/null || true
-        ok "btrfs @ set as default subvolume (id ${defid})"
+    # The standard grub-install (run earlier) should have installed grubx64.efi. If it did
+    # not (it failed earlier), try once more so the fallback is self-sufficient.
+    if [ ! -f /mnt/boot/efi/EFI/GRUB/grubx64.efi ] && [ ! -f /mnt/boot/efi/EFI/archlinux/grubx64.efi ]; then
+        arch-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB 2>/tmp/grub.err \
+            && ok "GRUB EFI image installed (fallback)" \
+            || { echo "  ----- grub-install error -----"; sed 's/^/  /' /tmp/grub.err; echo "  --------------------------------"; warn "GRUB fallback incomplete; boot the ISO and run grub-install manually"; }
     fi
 
-    # 2) embedded early config: find root by FS UUID, then load the real grub.cfg
-    cat > /mnt/root/embed.cfg <<EMBED
-search --fs-uuid --no-floppy --set=root ${root_uuid}
-set prefix=(\$root)/boot/grub
-configfile \$prefix/grub.cfg
-EMBED
-
-    # 3) self-contained EFI image: embed ALL modules so early boot needs no external .mod files
-    mods=$(arch-chroot /mnt bash -c 'cd /usr/lib/grub/x86_64-efi && ls *.mod 2>/dev/null | sed "s/\.mod\$//" | tr "\n" " "')
-    mkdir -p /mnt/boot/efi/EFI/GRUB
-    if arch-chroot /mnt grub-mkimage -O x86_64-efi -c /root/embed.cfg \
-            -p "(hd0,gpt1)/boot/grub" \
-            -o /boot/efi/EFI/GRUB/grubx64.efi ${mods} 2>/tmp/grub_cross.err; then
-        ok "grubx64.efi built (self-contained, cross-disk)"
-    else
-        echo "  ----- grub-mkimage error -----"; sed 's/^/  /' /tmp/grub_cross.err; echo "  --------------------------------"
-        rm -f /mnt/root/embed.cfg
-        return 1
-    fi
-    rm -f /mnt/root/embed.cfg
-
-    # 4) static grub.cfg (one menuentry per installed kernel + Windows + firmware)
+    # Static grub.cfg: locate the root by FS UUID only -- no device.map, no hardcoded disk
+    # numbers, no embedded early config. Works for any UEFI btrfs(@) install.
     local nv=""
-    [ "${GPU_FAMILY}" = "nvidia" ] && [ "${NVIDIA_OPEN_OK}" = "1" ] \
-        && nv="nvidia_drm.modeset=1 nvidia_drm.fbdev=1"
+    [ "${GPU_FAMILY}" = "nvidia" ] && nv="nvidia_drm.modeset=1 nvidia_drm.fbdev=1"
     {
-        echo '# Generated by seikabook-os-install (cross-disk btrfs root workaround)'
+        echo '# Generated by seikabook-os-install (static grub.cfg fallback)'
         echo "set default=0"
         echo "set timeout=5"
         echo "insmod part_gpt"
@@ -591,7 +569,6 @@ EMBED
         echo "insmod search_fs_uuid"
         echo "insmod gzio"
         echo "insmod efi_gop"
-        echo "insmod font"
         echo "search --fs-uuid --no-floppy --set=root ${root_uuid}"
         for k in /mnt/boot/vmlinuz-*; do
             [ -e "$k" ] || continue
@@ -623,7 +600,7 @@ EMBED
     } > /mnt/boot/grub/grub.cfg
     ok "static grub.cfg written ($(wc -l < /mnt/boot/grub/grub.cfg) lines)"
 
-    # 5) ensure a GRUB NVRAM entry exists and is first
+    # Ensure a GRUB NVRAM entry exists and is first.
     if [ -d /sys/firmware/efi/efivars ] || mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null; then
         if ! efibootmgr 2>/dev/null | grep -q '\* GRUB'; then
             [ -n "${efi_disk}" ] && [ -n "${efi_partno}" ] \
@@ -728,7 +705,9 @@ printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/
         # initramfs files did not fit on a 200M ESP (and a buggy cleanup loop then deleted
         # the live kernels, leaving GRUB with a Windows-only menu).
         mkdir -p /mnt/boot/efi
-        mountpoint -q /mnt/boot/efi || mount "${EFI_PART}" /mnt/boot/efi 2>/dev/null || true
+        if ! mountpoint -q /mnt/boot/efi; then
+            mount "${EFI_PART}" /mnt/boot/efi || die "cannot mount ESP ${EFI_PART} at /mnt/boot/efi -- grub-install needs it"
+        fi
         # keep-existing ESP: clear stale Seikabook/Arch GRUB artifacts so a re-run does not
         # accumulate. Windows files (EFI/Microsoft, EFI/Boot, System Volume Information) are
         # NEVER touched. Kernels are not on the ESP in this layout, so nothing to delete here.
@@ -739,7 +718,8 @@ printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/
         fi
         # efivarfs must be mounted so grub-install can register the boot entry
         [ -d /sys/firmware/efi ] && { [ -d /sys/firmware/efi/efivars ] || \
-            mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null || true; }
+            mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null \
+            || warn "efivarfs not mounted; GRUB NVRAM entry may not be created (add it from the firmware boot menu)"; }
         rm -f /tmp/grub.err
         if arch-chroot /mnt grub-install --target=x86_64-efi \
             --efi-directory=/boot/efi --bootloader-id=GRUB 2>/tmp/grub.err; then
@@ -773,8 +753,7 @@ printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/
     if [ "${KEEP_WINDOWS}" = "1" ]; then
         echo 'GRUB_DISABLE_OS_PROBER=false' >> /mnt/etc/default/grub
     fi
-    # btrfs root subvolume: tells 10_linux + grub-btrfs the system lives in @
-    echo 'GRUB_BTRFS_ROOT_SUBVOLUME="@"' >> /mnt/etc/default/grub
+    # btrfs root subvolume: the system lives in @ (10_linux handles this automatically)
     # NVIDIA: enable DRM modeset + fbdev so Wayland (and the console) work on the
     # proprietary/open modules. Without modeset=1 a Wayland session will not start.
     if [ "${GPU_FAMILY}" = "nvidia" ] && [ "${NVIDIA_OPEN_OK}" = "1" ]; then
@@ -787,6 +766,9 @@ printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/
     # lives in the "Advanced options" submenu. Pin it so a rebuild can never silently boot lts.
     echo 'GRUB_DEFAULT=0' >> /mnt/etc/default/grub
     echo 'GRUB_SAVEDEFAULT=false' >> /mnt/etc/default/grub
+    # Clean device.map so grub-probe uses its auto-generated mapping (a stale hand-written
+    # device.map is the classic cause of "cannot find a GRUB drive for /dev/...").
+    rm -f /mnt/boot/grub/device.map
     if [ "${GRUB_OK}" = "1" ]; then
         arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -3
     fi
@@ -887,7 +869,6 @@ printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/
   "run_ionice" : "true"
 }
 EOF
-    enable_svc grub-btrfsd.service
     # Scheduled snapshots: Timeshift has NO systemd timer on Arch - it runs via cron.
     # Enable cronie and drop Timeshift's standard cron job (--check every 10 min creates
     # the daily/weekly snapshots defined in the json above).
@@ -909,9 +890,8 @@ Description = Timeshift: creating snapshot before pacman transaction...
 When = PreTransaction
 Exec = /usr/bin/timeshift --create --comments "pacman pre-upgrade" --scripted
 EOF
-    echo 'GRUB_BTRFS_Timeshift=true' >> /mnt/etc/default/grub-btrfs 2>/dev/null || true
-    ok "Timeshift (BTRFS mode) configured: scheduled via cronie + pre-upgrade pacman hook; grub-btrfs enabled"
-    ok "Services enabled (NetworkManager, ${dm:-sshd}, cronie, grub-btrfsd)"
+    ok "Timeshift (BTRFS mode) configured: scheduled via cronie + pre-upgrade pacman hook"
+    ok "Services enabled (NetworkManager, ${dm:-sshd}, cronie)"
 }
 
 # ════════════════════════════════════════════════════════════
