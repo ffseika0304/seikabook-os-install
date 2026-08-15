@@ -483,11 +483,31 @@ install_base() {
     # ALWAYS sync the databases (pacstrap does NOT auto-sync). Gating the sync
     # behind "was it already enabled" was a real bug: a pre-enabled ISO silently
     # skipped the sync and lib32 targets stayed unfindable.
-    if [ "${DESKTOP}" != "headless" ] && grep -q '^#[[:space:]]*\[multilib\]' /etc/pacman.conf; then
-        sed -i '/^#[[:space:]]*\[multilib\]/,/^#[[:space:]]*Include = \/etc\/pacman.d\/mirrorlist/ s/^#//' /etc/pacman.conf
+    if [ "${DESKTOP}" != "headless" ]; then
+        # Uncomment [multilib] only if still commented (idempotent). The Arch ISO may
+        # ship it commented OR already uncommented.
+        if grep -q '^#[[:space:]]*\[multilib\]' /etc/pacman.conf; then
+            sed -i '/^#[[:space:]]*\[multilib\]/,/^#[[:space:]]*Include = \/etc\/pacman.d\/mirrorlist/ s/^#//' /etc/pacman.conf
+        fi
+        # Sync ALL databases. pacstrap copies the HOST pacman.conf and runs its own
+        # internal -Sy against the TARGET root, so the host MUST have [multilib] enabled
+        # AND its database downloaded -- otherwise lib32-* stays "target not found".
+        # Make failures LOUD (no /dev/null, no || true) and retry, so a flaky mirror or
+        # transient network blip cannot silently leave the db stale and break pacstrap.
+        local synced=0
+        for _i in 1 2 3; do
+            if pacman -Sy --noconfirm; then synced=1; break; fi
+            warn "pacman -Sy attempt ${_i} failed, retrying in 3s..."; sleep 3
+        done
+        if [ "${synced}" != "1" ]; then
+            die "pacman -Sy failed after 3 attempts -- check network/mirror, then re-run."
+        fi
+        # Seed the target root's pacman.conf with [multilib] too, so any post-pacstrap
+        # pacman call (and the installed system) sees 32-bit repos regardless of how
+        # pacstrap handles config. Safe/idempotent.
+        mkdir -p /mnt/etc
+        cp /etc/pacman.conf /mnt/etc/pacman.conf
     fi
-    # Sync ALL databases before pacstrap (covers [multilib] and every repo). Safe/idempotent.
-    pacman -Sy --noconfirm >/dev/null 2>&1 || true
 
     PACKAGES="base base-devel linux-zen linux-zen-headers linux-lts linux-lts-headers linux-firmware \
 btrfs-progs grub efibootmgr os-prober ntfs-3g timeshift grub-btrfs \
