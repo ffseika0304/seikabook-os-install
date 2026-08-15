@@ -108,6 +108,43 @@ echo
 # ════════════════════════════════════════════════════════════
 # 1. Hardware detection
 # ════════════════════════════════════════════════════════════
+# Classify an NVIDIA GPU (from its `lspci` line) into a driver strategy.
+# nvidia-open (DKMS) supports Turing and newer (RTX 20/30/40/50, GTX 16, Blackwell).
+# Pre-Turing (Pascal/Maxwell/Volta/Kepler/Fermi) is NOT supported by open modules and
+# needs a legacy AUR driver. Design choice: DETECT + WARN, never silently install a
+# driver that cannot run the card.
+#   NVIDIA_OPEN_OK=1   -> install nvidia-open-dkms
+#   NVIDIA_OPEN_OK=0   -> legacy / unrecognized -> do NOT auto-install, just warn
+#   NVIDIA_LEGACY_PKG  -> suggested AUR driver (empty if generation unrecognized)
+classify_nvidia() {
+    NVIDIA_OPEN_OK=1
+    NVIDIA_LEGACY_PKG=""
+    local low="${1,,}"
+    case "$low" in
+        # Turing+ : open kernel modules supported. Match BOTH marketing names and
+        # chip codes, so a GPU is still recognized even if lspci omits the model name.
+        #   Turing=tu1xx, Ampere=ga1xx, Ada=ad1xx, Blackwell=gb1xx/gb2xx
+        *rtx\ *|*rtx[0-9]*|*geforce\ rtx*|*gtx\ 16*|*gtx16*|*tu1*|*ga1*|*ad1*|*gb1*|*gb2*)
+            NVIDIA_OPEN_OK=1 ;;
+        # Pascal / Maxwell / Volta (GTX 10/9/8, GP1xx/GM1xx/GM2xx) -> nvidia-580xx-dkms (AUR)
+        *gtx\ 10*|*gtx10*|*gtx\ 9*|*gtx9*|*gtx\ 8*|*gtx8*|*gp1*|*gm1*|*gm2*)
+            NVIDIA_OPEN_OK=0; NVIDIA_LEGACY_PKG="nvidia-580xx-dkms" ;;
+        # Kepler (GTX 7/6, GK1xx) -> nvidia-470xx-dkms (AUR)
+        *gtx\ 7*|*gtx7*|*gtx\ 6*|*gtx6*|*gk1*)
+            NVIDIA_OPEN_OK=0; NVIDIA_LEGACY_PKG="nvidia-470xx-dkms" ;;
+        # Fermi (GTX 5/4, GF1xx) -> nvidia-390xx-dkms (AUR)
+        *gtx\ 5*|*gtx5*|*gtx\ 4*|*gtx4*|*gf1*)
+            NVIDIA_OPEN_OK=0; NVIDIA_LEGACY_PKG="nvidia-390xx-dkms" ;;
+        # Tesla (G80/GT200/GF100) -> nvidia-340xx-dkms (AUR)
+        *g80*|*gt200*|*gf10*)
+            NVIDIA_OPEN_OK=0; NVIDIA_LEGACY_PKG="nvidia-340xx-dkms" ;;
+        # Unrecognized NVIDIA string: assume it MAY be too old -> do not silently
+        # install an unsupported driver; warn and let the user install the right one.
+        *)
+            NVIDIA_OPEN_OK=0; NVIDIA_LEGACY_PKG="" ;;
+    esac
+}
+
 detect_hardware() {
     echo
     say "────────── Hardware detection ──────────"
@@ -127,6 +164,18 @@ detect_hardware() {
         *intel*) GPU_FAMILY="intel" ;;
         *) GPU_FAMILY="unknown" ;;
     esac
+    if [ "${GPU_FAMILY}" = "nvidia" ]; then
+        classify_nvidia "${GPU_LINE}"
+        if [ "${NVIDIA_OPEN_OK}" != "1" ]; then
+            if [ -n "${NVIDIA_LEGACY_PKG}" ]; then
+                warn "Pre-Turing NVIDIA GPU - nvidia-open-dkms does NOT support it; skipping auto-install."
+                warn "After install, install the legacy driver manually from AUR: ${NVIDIA_LEGACY_PKG}"
+            else
+                warn "Unrecognized NVIDIA GPU - skipping automatic NVIDIA driver install (detect+notify, not silent)."
+                warn "If this is Turing+ (RTX / GTX 16), after install run: paru/yay -S nvidia-open-dkms nvidia-utils"
+            fi
+        fi
+    fi
     echo "Memory : $(awk '/^MemTotal:/{printf "%.1f GiB\n", $2/1024/1024}' /proc/meminfo 2>/dev/null || echo unknown)"
     echo "Disks  :"
     lsblk -d -o NAME,SIZE,MODEL,TRAN 2>/dev/null | grep -vE 'NAME|loop' | head -6 || true
@@ -148,7 +197,17 @@ suggest_plan() {
     esac
     case "${GPU_FAMILY}" in
         amd)    echo "  - GPU: AMD - amdgpu + Mesa open driver, zero config" ;;
-        nvidia) echo "  - GPU: NVIDIA - nvidia-open-dkms (open kernel modules, DKMS; builds for your zen kernel, NOT the laggy nouveau). Covers Turing+ (RTX20/30/40/50). Older (GTX10xx/9xx) need a legacy AUR driver." ;;
+        nvidia)
+            if [ "${NVIDIA_OPEN_OK}" = "1" ]; then
+                echo "  - GPU: NVIDIA - nvidia-open-dkms (open modules, DKMS; builds for your zen kernel, NOT nouveau). Supports Turing->Ada (RTX20/30/40/50) + Blackwell; Ampere/RTX30 clean (open-module PM caveat is Turing-specific)."
+            else
+                echo "  - GPU: NVIDIA (PRE-TURING) - nvidia-open-dkms does NOT support this GPU; automatic driver install SKIPPED."
+                if [ -n "${NVIDIA_LEGACY_PKG}" ]; then
+                    echo "      After install, manually install the legacy driver from AUR: ${NVIDIA_LEGACY_PKG}"
+                else
+                    echo "      Unrecognized generation - if Turing+, after install run: paru/yay -S nvidia-open-dkms nvidia-utils"
+                fi
+            fi ;;
         intel)  echo "  - GPU: Intel - i915/xe open driver, zero config" ;;
         *)      echo "  - GPU: unknown - check with lspci after install" ;;
     esac
@@ -415,6 +474,16 @@ install_base() {
     # Note: $( [ ... ] && echo ... || true ) must keep || true --
     # otherwise when the condition is false the substitution exits 1,
     # and under set -e the assignment would abort (classic trap)
+
+    # Enable [multilib] BEFORE pacstrap: the Arch ISO ships it commented out,
+    # and any lib32-* package (lib32-nvidia-utils for 32-bit NVIDIA gaming,
+    # Steam/Wine, etc.) is unresolvable until it is on. Only needed for a
+    # desktop install where 32-bit libs make sense.
+    if [ "${DESKTOP}" != "headless" ] && ! grep -q '^\[multilib\]' /etc/pacman.conf; then
+        sed -i '/^#\[multilib\]/,/^#Include = \/etc\/pacman.d\/mirrorlist/ s/^#//' /etc/pacman.conf
+        pacman -Sy --noconfirm >/dev/null 2>&1 || true
+    fi
+
     PACKAGES="base base-devel linux-zen linux-zen-headers linux-lts linux-lts-headers linux-firmware \
 btrfs-progs grub efibootmgr os-prober ntfs-3g timeshift grub-btrfs \
 networkmanager cronie sudo vim git \
@@ -426,11 +495,16 @@ noto-fonts noto-fonts-cjk" || true ) \
 $( [ "${DESKTOP}" = "hyprland" ] && echo "hyprland sddm waybar rofi-wayland kitty \
 fcitx5-im fcitx5-chinese-addons noto-fonts noto-fonts-cjk" || true ) \
 $( [ "${DESKTOP}" = "headless" ] && echo "openssh cronie" || true ) \
-$( [ "${GPU_FAMILY}" = "nvidia" ] && echo "nvidia-open-dkms$( [ \"${DESKTOP}\" != \"headless\" ] && echo \" lib32-nvidia-open-utils\" )" || true )"
+$( [ "${GPU_FAMILY}" = "nvidia" ] && [ "${NVIDIA_OPEN_OK}" = "1" ] && echo "nvidia-open-dkms nvidia-utils nvidia-settings$( [ \"${DESKTOP}\" != \"headless\" ] && echo \" lib32-nvidia-utils\" )" || true )"
 
     say "Installing base system + desktop (~10-15 min, depends on network)..."
     pacstrap -K /mnt ${PACKAGES} 2>&1 | tail -3
     genfstab -U /mnt >> /mnt/etc/fstab
+    # Persist [multilib] in the installed system too (pacstrap does not copy the
+    # host pacman.conf, so it would otherwise ship commented out again).
+    if ! grep -q '^\[multilib\]' /mnt/etc/pacman.conf 2>/dev/null; then
+        sed -i '/^#\[multilib\]/,/^#Include = \/etc\/pacman.d\/mirrorlist/ s/^#//' /mnt/etc/pacman.conf
+    fi
     ok "Base system installed"
 }
 
@@ -545,7 +619,7 @@ printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/
     echo 'GRUB_BTRFS_ROOT_SUBVOLUME="@"' >> /mnt/etc/default/grub
     # NVIDIA: enable DRM modeset + fbdev so Wayland (and the console) work on the
     # proprietary/open modules. Without modeset=1 a Wayland session will not start.
-    if [ "${GPU_FAMILY}" = "nvidia" ]; then
+    if [ "${GPU_FAMILY}" = "nvidia" ] && [ "${NVIDIA_OPEN_OK}" = "1" ]; then
         grep -q '^GRUB_CMDLINE_LINUX_DEFAULT=' /mnt/etc/default/grub \
             || echo 'GRUB_CMDLINE_LINUX_DEFAULT=""' >> /mnt/etc/default/grub
         sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 nvidia_drm.modeset=1 nvidia_drm.fbdev=1"/' /mnt/etc/default/grub
@@ -562,9 +636,9 @@ printf 'GTK_IM_MODULE=fcitx\nQT_IM_MODULE=fcitx\nXMODIFIERS=@im=fcitx\n' > /etc/
     # NVIDIA: early-load the driver modules so they load BEFORE the display manager
     # (and before nouveau could ever appear) - this is what makes the desktop snappy
     # instead of falling back to the slow nouveau / llvmpipe software renderer.
-    # nvidia-open-utils already blacklists nouveau via /usr/lib/modprobe.d, so we only
+    # nvidia-utils already blacklists nouveau via /usr/lib/modprobe.d, so we only
     # need to pin the nvidia modules into the initramfs and rebuild it.
-    if [ "${GPU_FAMILY}" = "nvidia" ]; then
+    if [ "${GPU_FAMILY}" = "nvidia" ] && [ "${NVIDIA_OPEN_OK}" = "1" ]; then
         sed -i 's/^MODULES=(/MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm /' /mnt/etc/mkinitcpio.conf
         arch-chroot /mnt mkinitcpio -P 2>&1 | tail -2
         ok "NVIDIA modules added to initramfs (early-load) and initramfs rebuilt"
