@@ -59,9 +59,12 @@ warn "产物为独立包 linux-zen-seika，不覆盖现有内核，GRUB 可回�
 [ "${ASSUME_YES}" = "1" ] || { read -rp "继续吗？[y/N] " ans; [[ "${ans,,}" == "y" ]] || exit 0; }
 
 # ── 2. 安装编译依赖 ──────────────────────────────────────
+# 注意：linux-zen 新版 makedepends 含 rust 工具链（CONFIG_RUST）与 python-yaml，
+# 必须显式装；base-devel 已含 binutils/glibc/gettext/perl/tar 等，无需重复。
 say "安装编译依赖..."
-pacman -S --needed --noconfirm base-devel git bc pahole python xxhash \
-    libelf openssl cpio zstd xz 2>&1 | tail -2
+pacman -S --needed --noconfirm base-devel git bc pahole python python-yaml xxhash \
+    libelf openssl cpio zstd xz \
+    rust rust-bindgen rust-src 2>&1 | tail -5
 
 # ── 3. 获取官方 linux-zen PKGBUILD ───────────────────────
 mkdir -p "${WORK}" && cd "${WORK}"
@@ -99,6 +102,12 @@ grep '^pkgbase' PKGBUILD
 say "注释 htmldocs 构建（省掉 texlive 巨包）..."
 sed -i 's|^  make htmldocs SPHINXOPTS=-QT &|#  make htmldocs SPHINXOPTS=-QT \&|; s|^  wait \$pid_docs$|#  wait \$pid_docs|' PKGBUILD
 
+# 连带删掉 htmldocs 的 makedepends 声明（graphviz/imagemagick/python-sphinx/
+# python-yaml/texlive-latexextra）。否则 makepkg 依赖检查会因缺 texlive 等直接挂，
+# 报「无法解决所有依赖关系」——即使构建本身已经被注释掉。
+sed -i '/^  # htmldocs$/d; /^  graphviz$/d; /^  imagemagick$/d; /^  python-sphinx$/d; /^  python-yaml$/d; /^  texlive-latexextra$/d' PKGBUILD
+grep -A40 '^makedepends=(' PKGBUILD | sed -n '1,30p'
+
 # ── 6. 手动准备源码（清华镜像加速） + 打 BORE 补丁 ──────
 # 内核源码 tarball 按"基础版本"命名（linux-7.1.8.tar.xz），kernel.org 目录是 v7.x（仅主版本号）；
 # 旧写法用完整 pkgver(7.1.8.zen1) 拼出 linux-7.1.8.zen1.tar.xz / v7.1.x → 404
@@ -135,8 +144,8 @@ chmod 755 "${WORK}" "${WORK}/linux-zen" 2>/dev/null || true
 
 say "解压源码并应用补丁（此步校验哈希，需与官方一致）..."
 if ! su "${BUILD_USER}" -s /bin/bash -c \
-    "export HOME=${BUILD_HOME}; cd ${WORK}/linux-zen && makepkg --nobuild --skippgpcheck" 2>&1 | tail -3; then
-    die "prepare 阶段失败（源码下载或哈希校验问题），请查看上方输出"
+    "export HOME=${BUILD_HOME}; cd ${WORK}/linux-zen && makepkg --nobuild --nodeps --skippgpcheck" 2>&1 | tail -5; then
+    die "源码准备阶段失败（makepkg --nobuild 未跑通，通常是源码下载/哈希校验问题），请查看上方 makepkg 输出"
 fi
 ls -d src/linux-* >/dev/null 2>&1 || die "源码未解压成功"
 
