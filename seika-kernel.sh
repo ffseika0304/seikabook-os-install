@@ -19,7 +19,15 @@ die()  { echo -e "${C_RED}[错误]${C_RESET} $*" >&2; exit 1; }
 # 常量
 REPO="https://gitee.com/seikabook/seikabook-os-install/raw/master"
 MIRROR_KERNEL="https://mirrors.tuna.tsinghua.edu.cn/kernel"
-WORK="/tmp/seika-kernel-build"
+WORK="${SEIKA_KERNEL_WORK:-/tmp/seika-kernel-build}"
+# 编译 zen 内核解压+产物常 >10G；若 WORK 落在 tmpfs(/tmp) 且空间不足会报
+# No space left on device。小内存机器可用 SEIKA_KERNEL_WORK=/mnt/big-disk/build
+# 指到机械盘避开 tmpfs。
+WORK_AVAIL_G="$(df -P --block-size=1G "$WORK" 2>/dev/null | awk 'NR==2{print $4}')" || true
+if [ -n "${WORK_AVAIL_G}" ] && [ "${WORK_AVAIL_G}" -lt 15 ]; then
+    warn "WORK 所在盘仅剩 ${WORK_AVAIL_G}G 可用（编译 zen 常需 >10G）。"
+    warn "若后续报 No space left on device，请用：SEIKA_KERNEL_WORK=/空间充足的路径 bash -c \"\$(curl -sSL ${REPO}/seika-kernel.sh)\""
+fi
 
 # ── 0. 参数（防呆：不接收复杂参数） ──────────────────────
 ASSUME_YES=0
@@ -203,6 +211,21 @@ else
 fi
 su "${BUILD_USER}" -s /bin/bash -c \
     "export HOME=${BUILD_HOME}; cd ${WORK}/linux-zen/${SRC_DIR} && find . -name '*.rej' -delete"
+
+# ── 6.6 BORE 补丁后必须重新解析 .config ───────────────────
+# 上方 makepkg --nobuild 的 prepare() 在「打 BORE 补丁之前」就执行了
+# make olddefconfig 生成 .config，因此 .config 里还没有 BORE 新增的
+# SCHED_BORE 等符号。若不在此补一次非交互解析，下面 makepkg -e 编译时
+# make 会触发交互式 oldconfig 卡在 (NEW) 提示上 → 编译假死/失败。
+# SCHED_BORE 的 Kconfig default 为 y，olddefconfig 会自动开启 BORE。
+say "BORE 补丁后重新解析 .config（非交互，避免编译卡交互提示）..."
+su "${BUILD_USER}" -s /bin/bash -c \
+    "export HOME=${BUILD_HOME}; cd ${WORK}/linux-zen/${SRC_DIR} && make olddefconfig" 2>&1 | tail -3
+if grep -q "^CONFIG_SCHED_BORE=y$" "${WORK}/linux-zen/${SRC_DIR}/.config"; then
+    ok "SCHED_BORE 已开启（BORE 调度器生效）"
+else
+    warn "未检测到 CONFIG_SCHED_BORE=y，BORE 可能未生效，请检查补丁"
+fi
 cd "${WORK}/linux-zen"
 
 # ── 7. 编译 ──────────────────────────────────────────────
