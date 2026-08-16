@@ -20,9 +20,11 @@ die()  { echo -e "${C_RED}[错误]${C_RESET} $*" >&2; exit 1; }
 REPO="https://gitee.com/seikabook/seikabook-os-install/raw/master"
 MIRROR_KERNEL="https://mirrors.tuna.tsinghua.edu.cn/kernel"
 WORK="${SEIKA_KERNEL_WORK:-/tmp/seika-kernel-build}"
-# 编译 zen 内核解压+产物常 >10G；若 WORK 落在 tmpfs(/tmp) 且空间不足会报
-# No space left on device。小内存机器可用 SEIKA_KERNEL_WORK=/mnt/big-disk/build
-# 指到机械盘避开 tmpfs。
+# 编译 zen 内核解压+产物常 >10G，且 gcc 并行编译会产生大量临时 .s/.o 文件；
+# 若 WORK 落在 tmpfs(/tmp) 且空间不足会报 No space left on device。
+# 用 SEIKA_KERNEL_WORK 指到空间充足的真实磁盘(如 /home/xxx/build)，
+# 并让 TMPDIR 跟随 WORK，使 gcc 临时文件也写在该盘、彻底避开 tmpfs。
+export TMPDIR="${WORK}"
 WORK_AVAIL_G="$(df -P --block-size=1G "$WORK" 2>/dev/null | awk 'NR==2{print $4}')" || true
 if [ -n "${WORK_AVAIL_G}" ] && [ "${WORK_AVAIL_G}" -lt 15 ]; then
     warn "WORK 所在盘仅剩 ${WORK_AVAIL_G}G 可用（编译 zen 常需 >10G）。"
@@ -232,7 +234,7 @@ cd "${WORK}/linux-zen"
 say "开始编译（-j$(nproc)，预计 25-40 分钟），日志: ${WORK}/build.log"
 sleep 2
 su "${BUILD_USER}" -s /bin/bash -c \
-    "export HOME=${BUILD_HOME}; cd ${WORK}/linux-zen && MAKEFLAGS='-j$(nproc)' makepkg --skippgpcheck --nodeps --skipchecksums -e" \
+    "export HOME=${BUILD_HOME}; export TMPDIR=${WORK}; cd ${WORK}/linux-zen && MAKEFLAGS='-j$(nproc)' makepkg --skippgpcheck --nodeps --skipchecksums -e" \
     2>&1 | tee "${WORK}/build.log" | tail -5
 [ -n "$(ls linux-zen-seika-*-x86_64.pkg.tar.zst 2>/dev/null)" ] || die "编译失败，请查看 ${WORK}/build.log"
 
