@@ -23,10 +23,12 @@ WORK="/tmp/seika-kernel-build"
 
 # ── 0. 参数（防呆：不接收复杂参数） ──────────────────────
 ASSUME_YES=0
+CLEAN=0
 for a in "$@"; do
     case "$a" in
         -y|--yes) ASSUME_YES=1 ;;
-        -h|--help) echo "用法: sudo bash seika-kernel.sh [-y]"; exit 0 ;;
+        -c|--clean) CLEAN=1 ;;
+        -h|--help) echo "用法: sudo bash seika-kernel.sh [-y] [-c]"; echo "  -y    跳过确认"; echo "  -c    强制重新克隆 linux-zen（默认复用已有目录，断点续编）"; exit 0 ;;
         *) die "未知参数: $a（本脚本不接收复杂参数，防止误操作）" ;;
     esac
 done
@@ -69,14 +71,18 @@ pacman -S --needed --noconfirm base-devel git bc pahole python python-yaml xxhas
 # ── 3. 获取官方 linux-zen PKGBUILD ───────────────────────
 mkdir -p "${WORK}" && cd "${WORK}"
 say "获取官方 linux-zen PKGBUILD..."
-rm -rf linux-zen
-if ! git clone --depth 1 -q \
-    https://gitlab.archlinux.org/archlinux/packaging/packages/linux-zen.git; then
-    say "gitlab 直连失败，改用 tarball..."
-    curl -fsSL --connect-timeout 15 -o lz.tar.gz \
-        "https://gitlab.archlinux.org/archlinux/packaging/packages/linux-zen/-/archive/main/linux-zen-main.tar.gz" \
-        || die "获取 PKGBUILD 失败（网络问题），可稍后重试"
-    tar xzf lz.tar.gz && mv linux-zen-main linux-zen
+if [ ! -d linux-zen ] || [ "${CLEAN:-0}" = "1" ]; then
+  rm -rf linux-zen
+  if ! git clone --depth 1 -q \
+      https://gitlab.archlinux.org/archlinux/packaging/packages/linux-zen.git; then
+      say "gitlab 直连失败，改用 tarball..."
+      curl -fsSL --connect-timeout 15 -o lz.tar.gz \
+          "https://gitlab.archlinux.org/archlinux/packaging/packages/linux-zen/-/archive/main/linux-zen-main.tar.gz" \
+          || die "获取 PKGBUILD 失败（网络问题），可稍后重试"
+      tar xzf lz.tar.gz && mv linux-zen-main linux-zen
+  fi
+else
+  say "复用已有 linux-zen 目录（断点续编；--clean 可强制重新克隆）"
 fi
 cd linux-zen
 
@@ -108,6 +114,12 @@ sed -i 's|^  make htmldocs SPHINXOPTS=-QT &|#  make htmldocs SPHINXOPTS=-QT \&|;
 sed -i '/^  # htmldocs$/d; /^  graphviz$/d; /^  imagemagick$/d; /^  python-sphinx$/d; /^  python-yaml$/d; /^  texlive-latexextra$/d' PKGBUILD
 grep -A40 '^makedepends=(' PKGBUILD | sed -n '1,30p'
 
+# 剥掉 source=() 里的 .sig / .sign 签名项：--skippgpcheck 本就跳过 PGP 校验，
+# 但若保留 {xz,sign}/{,.sig}，makepkg 仍会去 kernel.org / GitHub 拽签名文件 → 国内卡死。
+# 两个数据文件(.tar.xz / .patch.zst)由本脚本预先下到本地，makepkg 直接复用、不再联网。
+# 注：tarball 行用 ${_srcname}（带花括号），zen 补丁行用 $_srctag（不带花括号），分开匹配。
+sed -i 's/\$[$ {]_srcname[}]\.tar\.[{]xz,sign[}]/${_srcname}.tar.xz/; s/\$_srctag\.patch\.zst[{],\.sig[}]/$_srctag.patch.zst/' PKGBUILD
+
 # ── 6. 手动准备源码（清华镜像加速） + 打 BORE 补丁 ──────
 # 内核源码 tarball 按"基础版本"命名（linux-7.1.8.tar.xz），kernel.org 目录是 v7.x（仅主版本号）；
 # 旧写法用完整 pkgver(7.1.8.zen1) 拼出 linux-7.1.8.zen1.tar.xz / v7.1.x → 404
@@ -126,11 +138,21 @@ else
     ok "源码已存在，跳过下载"
 fi
 
-say "下载 zen 补丁集（GitHub，小文件可等待）..."
-if [ ! -f "linux-v${PKGVER}-zen1.patch.zst" ]; then
-    curl -fL --connect-timeout 15 --retry 3 -o "linux-v${PKGVER}-zen1.patch.zst" \
-        "https://github.com/zen-kernel/zen-kernel/releases/download/v${PKGVER}-zen1/linux-v${PKGVER}-zen1.patch.zst" \
-        || warn "zen 补丁下载失败——稍后 makepkg 会自行尝试"
+# zen 补丁来自 GitHub(zen-kernel releases)，国内直连常卡死 → 默认走 ghproxy 国内镜像；
+# 文件名须用「基础版本-zenN」(linux-v7.1.8-zen1.patch.zst)，不能用完整 pkgver(会多一段 .zen1)
+ZEN_TAG="v${PKGVER%.*}-${PKGVER##*.}"      # v7.1.8-zen1
+ZEN_PATCH="linux-${ZEN_TAG}.patch.zst"      # linux-v7.1.8-zen1.patch.zst
+say "下载 zen 补丁集 ${ZEN_PATCH}（GitHub 经 ghproxy 国内镜像，直连慢）..."
+if [ ! -f "${ZEN_PATCH}" ]; then
+    if curl -fL --connect-timeout 20 --retry 2 -o "${ZEN_PATCH}" \
+        "https://ghproxy.net/https://github.com/zen-kernel/zen-kernel/releases/download/${ZEN_TAG}/${ZEN_PATCH}"; then
+        ok "zen 补丁就绪（ghproxy）"
+    else
+        warn "ghproxy 下载失败，回退直连 GitHub（可能很慢）..."
+        curl -fL --connect-timeout 15 --retry 2 -o "${ZEN_PATCH}" \
+            "https://github.com/zen-kernel/zen-kernel/releases/download/${ZEN_TAG}/${ZEN_PATCH}" \
+            || warn "zen 补丁下载失败——稍后 makepkg 会自行尝试（确保 linux-zen 目录下有 ${ZEN_PATCH}）"
+    fi
 fi
 
 # 解压 + 打 BORE（makepkg --nobuild 只做 prepare，然后手动 patch，再 -e 编译）
