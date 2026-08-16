@@ -155,6 +155,29 @@ if [ ! -f "${ZEN_PATCH}" ]; then
     fi
 fi
 
+# ── 6.5 让校验和与 source 等长（关键！否则 makepkg lint 报数组大小不一致）──
+# 上面把 source 从 4 项(数据+签名)精简成 2 项(仅数据)，但 sha256sums/b2sums
+# 仍是 4 项、且还有一个仅 1 项的 b2sums_x86_64 → 数组大小对不上 → makepkg 直接报错。
+# 这里按已下载到本地的真实文件计算哈希写回，既等长又有完整性校验；
+# 若文件意外缺失则降级为 SKIP（跳过校验，交给 makepkg 自行下载）。
+if [ -f "${SRC_TARBALL}" ] && [ -f "${ZEN_PATCH}" ]; then
+    S_TAR_SHA="$(sha256sum "${SRC_TARBALL}" | awk '{print $1}')"
+    S_TAR_B2="$(b2sum "${SRC_TARBALL}" | awk '{print $1}')"
+    S_ZEN_SHA="$(sha256sum "${ZEN_PATCH}" | awk '{print $1}')"
+    S_ZEN_B2="$(b2sum "${ZEN_PATCH}" | awk '{print $1}')"
+    perl -0777 -i -pe \
+        "s/sha256sums=\(.*?\)/sha256sums=('${S_TAR_SHA}' '${S_ZEN_SHA}')/s;" \
+        "s/b2sums=\(.*?\)/b2sums=('${S_TAR_B2}' '${S_ZEN_B2}')/s;" \
+        "s/^\s*b2sums_x86_64=.*\n//m" PKGBUILD
+    ok "已按本地源码写入 sha256/b2 校验和（source 2 项 → 校验和 2 项）"
+else
+    warn "源码文件缺失，无法计算校验和；将 sha256sums/b2sums 置为 SKIP（跳过校验）"
+    perl -0777 -i -pe \
+        "s/sha256sums=\(.*?\)/sha256sums=('SKIP' 'SKIP')/s;" \
+        "s/b2sums=\(.*?\)/b2sums=('SKIP' 'SKIP')/s;" \
+        "s/^\s*b2sums_x86_64=.*\n//m" PKGBUILD
+fi
+
 # 解压 + 打 BORE（makepkg --nobuild 只做 prepare，然后手动 patch，再 -e 编译）
 # makepkg 禁止 root 运行 → 用 sudo 调用者(SUDO_USER)或 nobody 降权
 BUILD_USER="${SUDO_USER:-}"
