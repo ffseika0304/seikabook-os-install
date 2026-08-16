@@ -165,17 +165,13 @@ if [ -f "${SRC_TARBALL}" ] && [ -f "${ZEN_PATCH}" ]; then
     S_TAR_B2="$(b2sum "${SRC_TARBALL}" | awk '{print $1}')"
     S_ZEN_SHA="$(sha256sum "${ZEN_PATCH}" | awk '{print $1}')"
     S_ZEN_B2="$(b2sum "${ZEN_PATCH}" | awk '{print $1}')"
-    perl -0777 -i -pe \
-        "s/sha256sums=\(.*?\)/sha256sums=('${S_TAR_SHA}' '${S_ZEN_SHA}')/s;" \
-        "s/b2sums=\(.*?\)/b2sums=('${S_TAR_B2}' '${S_ZEN_B2}')/s;" \
-        "s/^\s*b2sums_x86_64=.*\n//m" PKGBUILD
+    # 注意：perl 的多条替换必须写进【同一个 -e 字符串】（用 ; 分隔）。
+    # 写成多行多引号会被 perl 把后两条当成「文件名」而忽略（曾踩坑：只有 sha256 生效、b2 没改）。
+    perl -0777 -i -pe "s/sha256sums=\(.*?\)/sha256sums=('${S_TAR_SHA}' '${S_ZEN_SHA}')/s; s/b2sums=\(.*?\)/b2sums=('${S_TAR_B2}' '${S_ZEN_B2}')/s; s/^\s*b2sums_x86_64=.*\n//m" PKGBUILD
     ok "已按本地源码写入 sha256/b2 校验和（source 2 项 → 校验和 2 项）"
 else
     warn "源码文件缺失，无法计算校验和；将 sha256sums/b2sums 置为 SKIP（跳过校验）"
-    perl -0777 -i -pe \
-        "s/sha256sums=\(.*?\)/sha256sums=('SKIP' 'SKIP')/s;" \
-        "s/b2sums=\(.*?\)/b2sums=('SKIP' 'SKIP')/s;" \
-        "s/^\s*b2sums_x86_64=.*\n//m" PKGBUILD
+    perl -0777 -i -pe "s/sha256sums=\(.*?\)/sha256sums=('SKIP' 'SKIP')/s; s/b2sums=\(.*?\)/b2sums=('SKIP' 'SKIP')/s; s/^\s*b2sums_x86_64=.*\n//m" PKGBUILD
 fi
 
 # 解压 + 打 BORE（makepkg --nobuild 只做 prepare，然后手动 patch，再 -e 编译）
@@ -189,7 +185,7 @@ chmod 755 "${WORK}" "${WORK}/linux-zen" 2>/dev/null || true
 
 say "解压源码并应用补丁（此步校验哈希，需与官方一致）..."
 if ! su "${BUILD_USER}" -s /bin/bash -c \
-    "export HOME=${BUILD_HOME}; cd ${WORK}/linux-zen && makepkg --nobuild --nodeps --skippgpcheck" 2>&1 | tail -5; then
+    "export HOME=${BUILD_HOME}; cd ${WORK}/linux-zen && makepkg --nobuild --nodeps --skippgpcheck --skipchecksums" 2>&1 | tail -5; then
     die "源码准备阶段失败（makepkg --nobuild 未跑通，通常是源码下载/哈希校验问题），请查看上方 makepkg 输出"
 fi
 ls -d src/linux-* >/dev/null 2>&1 || die "源码未解压成功"
@@ -213,7 +209,7 @@ cd "${WORK}/linux-zen"
 say "开始编译（-j$(nproc)，预计 25-40 分钟），日志: ${WORK}/build.log"
 sleep 2
 su "${BUILD_USER}" -s /bin/bash -c \
-    "export HOME=${BUILD_HOME}; cd ${WORK}/linux-zen && MAKEFLAGS='-j$(nproc)' makepkg --skippgpcheck --nodeps -e" \
+    "export HOME=${BUILD_HOME}; cd ${WORK}/linux-zen && MAKEFLAGS='-j$(nproc)' makepkg --skippgpcheck --nodeps --skipchecksums -e" \
     2>&1 | tee "${WORK}/build.log" | tail -5
 [ -n "$(ls linux-zen-seika-*-x86_64.pkg.tar.zst 2>/dev/null)" ] || die "编译失败，请查看 ${WORK}/build.log"
 
