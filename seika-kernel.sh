@@ -37,11 +37,18 @@ command -v pacman >/dev/null || die "未检测到 pacman，请确认在 Arch Lin
 command -v makepkg >/dev/null || die "缺少 makepkg，请先安装 base-devel：pacman -S base-devel"
 
 # CPU 提示（不限制，只是让用户知道这内核适不适合自己）
-CPU_VENDOR="$(lscpu 2>/dev/null | awk -F': *' '/^Vendor ID/{print $2; exit}')"
+# 优先读 /proc/cpuinfo 的 vendor_id：该字段名不受系统 locale 影响。
+# （中文环境下 lscpu 输出的是"厂商 ID："而非"Vendor ID:"，且用全角冒号，
+#   旧写法 /Vendor ID/ + ASCII 冒号 分隔符会整体匹配不到 → 误判"未知 CPU"）
+CPU_VENDOR="$(awk -F': *' '/^vendor_id/{print $2; exit}' /proc/cpuinfo 2>/dev/null)"
+# 兜底：个别环境没有 /proc/cpuinfo 时再试 lscpu（兼容中/英厂商标签与全角冒号）
+if [ -z "${CPU_VENDOR}" ]; then
+    CPU_VENDOR="$(lscpu 2>/dev/null | awk -F'[:：][[:space:]]*' '/Vendor ID|厂商 ID/{print $2; exit}')"
+fi
 case "${CPU_VENDOR,,}" in
-    *amd*) CPU_NOTE="AMD ${CPU_VENDOR} → zen 底包 + BORE 直接受益（桌面响应）" ;;
-    *intel*) CPU_NOTE="Intel ${CPU_VENDOR} → zen 底包 + BORE 同样有效（与架构无关）" ;;
-    *) CPU_NOTE="未知 CPU → BORE 调度器对 AMD/Intel 均有效" ;;
+    *amd*|*hygon*) CPU_NOTE="AMD 处理器（${CPU_VENDOR}）→ zen 底包 + BORE 直接受益（桌面响应）" ;;
+    *intel*)       CPU_NOTE="Intel 处理器（${CPU_VENDOR}）→ zen 底包 + BORE 同样有效（与架构无关）" ;;
+    *) CPU_NOTE="未知 CPU（${CPU_VENDOR:-读不到 vendor_id}）→ BORE 调度器对 AMD/Intel 均有效" ;;
 esac
 
 say "Seikabook OS Kernel —— 通用增强内核（linux-zen + BORE）"
