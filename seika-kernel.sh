@@ -100,14 +100,22 @@ say "注释 htmldocs 构建（省掉 texlive 巨包）..."
 sed -i 's|^  make htmldocs SPHINXOPTS=-QT &|#  make htmldocs SPHINXOPTS=-QT \&|; s|^  wait \$pid_docs$|#  wait \$pid_docs|' PKGBUILD
 
 # ── 6. 手动准备源码（清华镜像加速） + 打 BORE 补丁 ──────
-say "从清华镜像下载内核源码（${PKGVER}）..."
-MAJOR_MINOR="$(echo "${PKGVER}" | cut -d. -f1-2)"
-if [ ! -f "linux-${PKGVER}.tar.xz" ]; then
-    curl -fL --connect-timeout 15 -o "linux-${PKGVER}.tar.xz" \
-        "${MIRROR_KERNEL}/v${MAJOR_MINOR}.x/linux-${PKGVER}.tar.xz" \
-        || die "源码下载失败（清华镜像不可达？）"
+# 内核源码 tarball 按"基础版本"命名（linux-7.1.8.tar.xz），kernel.org 目录是 v7.x（仅主版本号）；
+# 旧写法用完整 pkgver(7.1.8.zen1) 拼出 linux-7.1.8.zen1.tar.xz / v7.1.x → 404
+KVER_MAJOR="$(echo "${PKGBASE}" | cut -d. -f1)"
+SRC_TARBALL="linux-${PKGBASE}.tar.xz"
+SRC_URL="${MIRROR_KERNEL}/v${KVER_MAJOR}.x/${SRC_TARBALL}"
+say "从清华镜像下载内核源码（${SRC_TARBALL}）..."
+if [ ! -f "${SRC_TARBALL}" ]; then
+    if curl -fL --connect-timeout 20 --retry 2 -o "${SRC_TARBALL}" "${SRC_URL}"; then
+        ok "源码就绪（清华镜像）"
+    else
+        # 镜像挂了别硬死，makepkg --nobuild 会按 PKGBUILD 自带源再试一次
+        warn "清华镜像下载失败，交给 makepkg 自行获取源码（PKGBUILD 自带源）"
+    fi
+else
+    ok "源码已存在，跳过下载"
 fi
-ok "源码就绪"
 
 say "下载 zen 补丁集（GitHub，小文件可等待）..."
 if [ ! -f "linux-v${PKGVER}-zen1.patch.zst" ]; then
