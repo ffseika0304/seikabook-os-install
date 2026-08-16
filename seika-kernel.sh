@@ -72,13 +72,15 @@ cd linux-zen
 
 # ── 4. 读版本号，匹配 BORE 补丁 ──────────────────────────
 PKGVER="$(. PKGBUILD && echo "${pkgver}")"
-PATCH_NAME="bore-zen-${PKGVER}.patch"
-say "官方 linux-zen 版本: ${PKGVER}"
+# linux-zen 的 pkgver 形如 7.1.8.zen1，末尾 .zenN 只是打包修订号；
+# 仓库内置的 BORE 补丁按"内核基础版本"命名（bore-zen-7.1.8.patch），需去掉 .zenN
+PKGBASE="${PKGVER%.zen*}"
+PATCH_NAME="bore-zen-${PKGBASE}.patch"
+say "官方 linux-zen 版本: ${PKGVER}（BORE 补丁基础版本 ${PKGBASE}）"
 say "下载 BORE 合并补丁 ${PATCH_NAME}（仓库内置，国内直连）..."
 if ! curl -fsSL --connect-timeout 15 -o "${PATCH_NAME}" \
     "${REPO}/files/${PATCH_NAME}"; then
-    die "未找到 ${PATCH_NAME}——内核版本 ${PKGVER} 的补丁还没适配。"
-         "去 https://gitee.com/seikabook/seikabook-os-install/issues 反馈，作者会跟进。"
+    die "未找到 ${PATCH_NAME}——内核版本 ${PKGVER} 的补丁还没适配。去 https://gitee.com/seikabook/seikabook-os-install/issues 反馈，作者会跟进。"
 fi
 ok "BORE 补丁就绪（$(wc -c < "${PATCH_NAME}") bytes）"
 
