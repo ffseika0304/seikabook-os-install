@@ -26,10 +26,39 @@ WORK="${SEIKA_KERNEL_WORK:-/tmp/seika-kernel-build}"
 # 并让 TMPDIR 跟随 WORK，使 gcc 临时文件也写在该盘、彻底避开 tmpfs。
 export TMPDIR="${WORK}"
 WORK_AVAIL_G="$(df -P --block-size=1G "$WORK" 2>/dev/null | awk 'NR==2{print $4}')" || true
-if [ -n "${WORK_AVAIL_G}" ] && [ "${WORK_AVAIL_G}" -lt 15 ]; then
-    warn "WORK 所在盘仅剩 ${WORK_AVAIL_G}G 可用（编译 zen 常需 >10G）。"
-    warn "若后续报 No space left on device，请用：SEIKA_KERNEL_WORK=/空间充足的路径 bash -c \"\$(curl -sSL ${REPO}/seika-kernel.sh)\""
-fi
+WORK_TOTAL_G="$(df -P --block-size=1G "$WORK" 2>/dev/null | awk 'NR==2{print $2}')" || true
+WORK_FSTYPE="$(df -T "$WORK" 2>/dev/null | awk 'NR==2{print $2}')" || true
+
+# ── 构建前磁盘空间判定 + 用户确认 ──────────────────────
+# 防止 tmpfs/小盘在并行编译中途 'No space left on device' 失败。
+# 注意：脚本常经 curl|bash 执行，stdin 是管道不能读确认，必须从 /dev/tty 读。
+confirm_build() {
+    local ans tty_dev="/dev/tty"
+    echo
+    echo "════════════════════════════════════════════════════"
+    echo "  构建前磁盘空间检查"
+    echo "  工作目录 WORK : ${WORK}"
+    echo "  文件系统      : ${WORK_FSTYPE:-未知} (可用 ${WORK_AVAIL_G:-?}G / 共 ${WORK_TOTAL_G:-?}G)"
+    echo "  TMPDIR(临时)  : ${TMPDIR}  (跟随 WORK，gcc 临时文件同盘)"
+    echo "  提示：zen 内核编译+临时文件约需 >10G 空间"
+    if [ -n "${WORK_AVAIL_G}" ] && [ "${WORK_AVAIL_G}" -lt 15 ]; then
+        warn "可用空间仅 ${WORK_AVAIL_G}G < 15G，编译极可能 'No space left on device' 失败！"
+        echo "  建议：SEIKA_KERNEL_WORK=/空间充足的路径 重跑（如 /home/xxx/build）"
+    fi
+    echo "════════════════════════════════════════════════════"
+    if [ -r "$tty_dev" ]; then
+        printf "确认用以上路径开始构建？[Y/n] " > "$tty_dev"
+        read -r ans < "$tty_dev" || ans="Y"
+    else
+        echo "（非交互环境，无 tty，默认继续）"
+        ans="Y"
+    fi
+    case "$ans" in
+        ""|Y|y|yes|YES|Yes) return 0 ;;
+        *) echo "已取消构建。"; exit 0 ;;
+    esac
+}
+confirm_build
 
 # ── 0. 参数（防呆：不接收复杂参数） ──────────────────────
 ASSUME_YES=0
