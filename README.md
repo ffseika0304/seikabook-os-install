@@ -5,6 +5,16 @@
 <p align="center">🥇 <b>不是发行版，是作者自己用着顺手、分享给同好的社群作品</b> 🥇</p>
 
 <p align="center">
+  <b>简体中文</b> ·
+  <a href="README.en.md">English</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/ffseika0304/seikabook-os-install">GitHub（主源）</a> ·
+  <a href="https://gitee.com/seikabook/seikabook-os-install">Gitee（国内镜像）</a>
+</p>
+
+<p align="center">
   <a href="#快速开始">安装</a> ·
   <a href="#两段式">使用方式</a> ·
   <a href="#它有什么">特性</a> ·
