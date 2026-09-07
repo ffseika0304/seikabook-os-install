@@ -25,9 +25,17 @@ WORK="${SEIKA_KERNEL_WORK:-/tmp/seika-kernel-build}"
 # 用 SEIKA_KERNEL_WORK 指到空间充足的真实磁盘(如 /home/xxx/build)，
 # 并让 TMPDIR 跟随 WORK，使 gcc 临时文件也写在该盘、彻底避开 tmpfs。
 export TMPDIR="${WORK}"
-WORK_AVAIL_G="$(df -P --block-size=1G "$WORK" 2>/dev/null | awk 'NR==2{print $4}')" || true
-WORK_TOTAL_G="$(df -P --block-size=1G "$WORK" 2>/dev/null | awk 'NR==2{print $2}')" || true
-WORK_FSTYPE="$(df -T "$WORK" 2>/dev/null | awk 'NR==2{print $2}')" || true
+# $WORK 此时可能还不存在（mkdir 在后面），df 需要已存在的路径才能 stat；
+# 沿路径向上找到最近的已存在祖先再 stat，避免显示「未知/?G」。
+_df_path="$WORK"
+while [ ! -e "$_df_path" ] && [ "$_df_path" != "/" ]; do
+    _df_path="$(dirname "$_df_path")"
+done
+[ -e "$_df_path" ] || _df_path="/"
+WORK_AVAIL_G="$(df -P --block-size=1G "$_df_path" 2>/dev/null | awk 'NR==2{print $4}')" || true
+WORK_TOTAL_G="$(df -P --block-size=1G "$_df_path" 2>/dev/null | awk 'NR==2{print $2}')" || true
+WORK_FSTYPE="$(df -T "$_df_path" 2>/dev/null | awk 'NR==2{print $2}')" || true
+unset _df_path
 
 # ── 构建前磁盘空间判定 + 用户确认 ──────────────────────
 # 防止 tmpfs/小盘在并行编译中途 'No space left on device' 失败。
