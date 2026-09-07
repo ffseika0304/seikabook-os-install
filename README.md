@@ -1,31 +1,29 @@
-# Seikabook OS — 你的硬件，它的灵魂。
+<h1 align="center">Seikabook OS</h1>
 
-> **帮小白速通 archiso、推开 KDE 大门再慢慢折腾；让老手快速编译自己的内核，魔改出属于自己的发行版。**
+<p align="center"><b>你的硬件，它的灵魂</b> —— 帮小白速通 archiso、推开 KDE 大门；让老手快速编译自己的内核，魔改出属于自己的发行版。</p>
 
-一个为**个人数字主权**而生的 Arch Linux 增强方案。
+<p align="center">🥇 <b>不是发行版，是作者自己用着顺手、分享给同好的社群作品</b> 🥇</p>
 
-不是发行版，是作者自己用着顺手、分享给同好的**社群作品**——但老手完全能基于它，魔改出自己的那一版。
+<p align="center">
+  <a href="#快速开始">安装</a> ·
+  <a href="#两段式">使用方式</a> ·
+  <a href="#它有什么">特性</a> ·
+  <a href="#国内加速">国内加速</a> ·
+  <a href="https://github.com/ffseika0304/seikabook-os-install/issues">反馈问题</a>
+</p>
 
-它的理念只有一句话，但同一套工具同时服务两类人：
+<p align="center">
+  <a href="https://github.com/ffseika0304/seikabook-os-install"><img src="https://img.shields.io/github/stars/ffseika0304/seikabook-os-install?style=flat-square&logo=github" alt="Stars"></a>
+  <a href="https://github.com/ffseika0304/seikabook-os-install/fork"><img src="https://img.shields.io/github/forks/ffseika0304/seikabook-os-install?style=flat-square&logo=github" alt="Forks"></a>
+  <a href="https://github.com/ffseika0304/seikabook-os-install/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License"></a>
+  <a href="https://img.shields.io/badge/arch-x86__64-blue?style=flat-square&logo=archlinux"><img src="https://img.shields.io/badge/arch-x86__64-blue?style=flat-square&logo=archlinux" alt="Arch x86_64"></a>
+  <a href="https://gitee.com/seikabook/seikabook-os-install"><img src="https://img.shields.io/badge/Gitee-%E5%9B%BD%E5%86%85%E5%8A%A0%E9%80%9F-C71D23?style=flat-square&logo=gitee" alt="Gitee 国内加速"></a>
+</p>
+
+Seikabook OS 是一个为**个人数字主权**而生的 Arch Linux 增强方案。它的理念只有一句话，但同一套工具同时服务两类人：
 
 > **小白**：先进入 KDE 桌面，再开始折腾 Arch 系统。
 > **老手**：在 archiso 的黑屏命令行里，也能快速恢复环境、拿到构建内核的思路。
-
----
-
-## 两种人，两条路
-
-**你是小白 —— 别在黑屏里背命令。**
-从 Arch ISO 启动，跑一个脚本，半小时内坐进 KDE。
-桌面、中文输入法、字体、网络、双内核全都给你配好。
-**等你舒服地用上系统了，再回头学 Arch** —— 分区、快照、内核，都是从桌面里打开终端慢慢玩的事。
-Seikabook OS 给你的是一个"已经会跑"的起点，不是一份待办清单。
-
-**你是老手 —— 黑屏命令行也是主场。**
-archiso 里你没有 GUI，但你清楚自己要什么：
-- 用同一套脚本，把任意一台新硬件**快速恢复成你熟悉的 Arch 环境**（内核策略 / 驱动 / 镜像源 / 桌面一次到位）；
-- `seika-kernel.sh` 不替你决定内核长什么样，而是给你一份**现场编译 zen + BORE 的现成思路与脚手架** —— 改调度器、加补丁、调编译参数，从这份基底开始。
-它把"装机经验"固化成可复用的脚本，让你把时间花在真正想折腾的地方。
 
 ---
 
@@ -38,25 +36,33 @@ archiso 里你没有 GUI，但你清楚自己要什么：
 - 国内网络环境下，装个软件、拉个镜像都费劲
 - 小白被 archiso 黑屏劝退，老手却又每次重配一遍环境
 
-Seikabook OS 把这些经验打包进一个脚本，只留一个入口：
+## Highlights
 
-```bash
-curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/install.sh | bash
-```
+**🥇 硬件感知，自动适配。** 自动识别 CPU / GPU，选型对应内核策略与驱动。NVIDIA 四代分级（Maxwell+ / Kepler / Fermi / Tesla）自动匹配驱动。
+
+**🥇 双内核并行（linux + linux-lts）。** 一个跑性能，一个跑稳定，GRUB 菜单自由切换。可选 `seika-kernel.sh` 现场编译 linux-zen + BORE 增强内核。
+
+**🥇 国内镜像源自动测速。** 清华 / 阿里 / 中科大，取最快。
+
+**🥇 BTRFS + Timeshift 快照。** `@` 根子卷 + `@home` 用户子卷（用户数据默认不进快照，只保系统），滚挂了秒回退。
+
+**🥇 四种桌面选项。** KDE（默认，最友好）/ GNOME / Hyprland / 无头服务器模式。
+
+**🥇 双系统 GRUB 兼容。** 自动识别 Windows（os-prober），保留双启。
+
+**🥇 中文环境开箱即用。** locale / fcitx5 / 中文字体 一键配好，NVIDIA 闭源驱动（nvidia-dkms + 对应内核 headers）自动匹配。
 
 ---
 
-## 它有什么
+## 国内加速
 
-- **硬件感知**：自动识别 CPU / GPU，选型对应内核策略与驱动
-- **双内核并行（官方 linux + linux-lts）**：一个跑性能，一个跑稳定，GRUB 菜单自由切换；可选 `seika-kernel.sh` 现场编译 linux-zen + BORE 增强内核（AMD / Intel 通用，与官方内核共存、随时回退）
-- **BTRFS + Timeshift 快照**：`@` 根子卷 + `@home` 用户子卷（用户数据默认不进快照，只保系统），滚挂了秒回退
-- **引导式手动分区**：EFI / / /home（可选）/ swap 逐步选，空闲空间自动建分区；双系统单 EFI 友好（也支持跨盘选 EFI）
-- **国内镜像源自动测速**：清华 / 阿里 / 中科大，选最快
-- **双系统 GRUB 兼容**：自动识别 Windows（os-prober），保留双启
-- **桌面环境可选**：KDE（默认，最友好）/ GNOME / Hyprland / 无头模式
-- **中文环境开箱即用**：locale / fcitx5 / 中文字体 一键配好
-- **NVIDIA 闭源驱动支持**：nvidia-dkms + 对应内核 headers 自动匹配
+本仓库主源在 GitHub，国内用户走 Gitee 镜像加速：
+
+| 用途 | 链接 |
+|---|---|
+| 仓库镜像 | `https://gitee.com/seikabook/seikabook-os-install` |
+| raw 直链 | `https://gitee.com/seikabook/seikabook-os-install/raw/master/` |
+| 一键安装 | `curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/install.sh \| bash` |
 
 ---
 
@@ -69,25 +75,6 @@ Seikabook OS 把"装机"拆成两步，第一步让你快速见到桌面，第�
 **第二段：增强内核（seika-kernel.sh）** —— 进系统后想优化时再跑。
 现场编译 `linux-zen + BORE` 调度器（桌面响应性提升，AMD / Intel 通用），带完整日志，产物是独立包，与官方内核共存、GRUB 随时回退。
 对老手，这是构建自己内核的脚手架与思路起点；对小白，这是"系统已经能跑之后，再进阶折腾"的入口。
-
-进系统后在 KDE 终端里一行跑起来：
-
-```bash
-sudo bash -c "$(curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/seika-kernel.sh)"
-```
-
-脚本会自动检测当前内核、编译 `linux-zen + BORE`、安装并写入 GRUB；重启后在 GRUB 的 **Advanced options** 里选 zen 内核即可。
-任何时候都能回退到官方 `linux` / `linux-lts` —— 增强内核只是多一个选项，不替你换掉默认。
-
-> 内核编译是"学习"的一部分 —— 先让桌面跑起来，再开始折腾。
-
----
-
-## 一键定制，不是"一个系统"
-
-你可以快速安装，也可以深度定制。
-它不限制你，只给你一个干净、可用、知道自己该跑成什么样的起点。
-装完你会得到一个 KDE 桌面，而不是一份待办的 Arch 安装教程。
 
 ---
 
@@ -108,6 +95,52 @@ curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/install.sh
 > `seika-kernel.sh` 增强内核脚本可用。
 > 欢迎提 issue 反馈你遇到的硬件和问题 —— 你踩过的坑会沉淀进下一版。
 
+进系统后在 KDE 终端里运行增强内核编译：
+
+```bash
+sudo bash -c "$(curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/seika-kernel.sh)"
+```
+
+脚本会自动检测当前内核、编译 `linux-zen + BORE`、安装并写入 GRUB；重启后在 GRUB 的 **Advanced options** 里选 zen 内核即可。
+任何时候都能回退到官方 `linux` / `linux-lts` —— 增强内核只是多一个选项，不替你换掉默认。
+
+---
+
+## 它有什么
+
+### 硬件支持
+
+| 特性 | 说明 |
+|---|---|
+| **架构** | **x86_64** |
+| **CPU 检测** | 自动识别 AMD / Intel，选型对应 microcode 与内核策略 |
+| **NVIDIA 驱动** | 四代分级：Maxwell+ 自动 nvidia-dkms、Kepler 退 nvidia-470xx-dkms、Fermi 退 nvidia-390xx-dkms、Tesla 退 nouveau |
+| **AMD / Intel 核显** | 默认集成内核驱动，无需额外操作 |
+
+### 系统特性
+
+| 特性 | 说明 |
+|---|---|
+| **双内核** | 官方 linux + linux-lts 并行，GRUB 菜单自由切换；可选 zen+BORE 增强内核 |
+| **文件系统** | BTRFS（`@` + `@home` 子卷），支持 Timeshift 快照 |
+| **分区** | 引导式手动分区（EFI / / /home / swap），空闲空间自动建分区 |
+| **镜像源** | 清华 / 阿里 / 中科大 自动测速取最快 |
+| **双系统** | 自动识别 Windows（os-prober），保留双启 |
+| **桌面** | KDE（默认）/ GNOME / Hyprland / 无头服务器模式 |
+| **中文环境** | locale / fcitx5 / 中文字体 一键配好 |
+
+### 仓库结构
+
+```
+seikabook-os-install/
+├── install.sh               # 安装脚本（975 行）
+├── seika-kernel.sh          # 增强内核编译脚本（293 行）
+├── files/
+│   └── bore-zen-7.1.8.patch # BORE 调度器补丁
+├── LICENSE                  # MIT
+└── README.md
+```
+
 ---
 
 ## 这不是一个"安装器"
@@ -124,23 +157,20 @@ curl -sSL https://gitee.com/seikabook/seikabook-os-install/raw/master/install.sh
 
 小白用它快速落地一个能用的桌面；老手用它把环境一键恢复、把内核构建思路跑通。
 
-只要它能跑 Arch（x86_64 / aarch64），就能用 Seikabook OS 来规划它的运行方式。
+---
+
+## Star History
+
+<a href="https://www.star-history.com/#ffseika0304/seikabook-os-install&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=ffseika0304/seikabook-os-install&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=ffseika0304/seikabook-os-install&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=ffseika0304/seikabook-os-install&type=Date" />
+ </picture>
+</a>
 
 ---
 
-## 许可证
+## License
 
 [MIT](LICENSE)，随便改，随便用。
-
-## 项目地址
-
-- Gitee（主源）：https://gitee.com/seikabook/seikabook-os-install
-- GitHub（镜像）：https://github.com/ffseika0304/seikabook-os-install
-
----
-
-## 最后的备注
-
-你在别的发行版里花在"排查为什么这个硬件不工作"上的时间，
-可以在 Seikabook OS 里，花在你真正想做的事情上 ——
-无论是小白坐进 KDE 后慢慢学，还是老手在黑屏里三下五除二恢复战场。
